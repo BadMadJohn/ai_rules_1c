@@ -140,6 +140,10 @@ The PowerShell script `tools/1c-epf-validate/scripts/epf-validate.ps1` was refre
 
 ## form-manage.md
 
+### Local fix `2026-10-14` — input-field events and pass-through keys
+
+`form-compile` refused the input-field events `Tuning` (Регулирование), `Opening` and `StartListChoice`, which vendor forms use (ZUP dump: 333, 195 and 2 input fields; support ticket 0225a24c, ERP 2.5 `Документ.НачислениеЗарплаты.ФормаДокумента`). They are allowed for `input` in the PowerShell and Python compilers and in `form-edit`, with the handler suffixes `Регулирование` / `НачалоВыбораИзСписка`. The pass-through scalars of `genericScalars` (`markNegatives`, `threeState`, `choiceListHeight` and 30 more) were written to `Form.xml` yet reported as «unknown key … ignored»; they now count as known keys. `form-compile-dsl.md` lists the `input` and `picField` events separately, as the compiler checks them.
+
 ### Local fix `2026-10-01` — button and command order, command `Representation`
 
 `form-edit` wrote a button's `CommandName` before its `Representation`, a command's `Action` before its `Picture` and a command's picture-and-text `Representation` as `PictureAndText`; the platform refused such a borrowed form with «Исключение XDTO произошло при чтении файла» (support ticket bc42b89c, 8.3.27.2170). Button children now follow the platform order (`Type`, `Visible`, `Representation`, `DefaultButton`, `Enabled`, `CommandName`, `Picture`, `Title`, `LocationInCommandBar`) and command children `Title`, `Shortcut`, `Picture`, `Action`, `Representation`, taken from every `Form.xml` of the ZUP dump; a command's `PictureAndText` is written as `TextPicture` (and a button's `TextPicture` as `PictureAndText`). `form-validate` check 15 reports a `Representation` outside the element's own enumeration. `form-compile` still writes a command's `Action` before `Shortcut` / `Picture` and a button's `Representation` after `CommandName` — not changed here.
@@ -292,6 +296,10 @@ The PowerShell script `tools/1c-mxl-validate/scripts/mxl-validate.ps1` was refre
 The compile/decompile/info scripts (`mxl-compile`, `mxl-decompile`, `mxl-info`) were not refreshed — no significant upstream changes for them in this period.
 
 ## role-manage.md
+
+### Local fix `2026-10-14` — `role-validate` parameters, rights-only edits
+
+The validate section described `-MetadataPath`, which `role-validate.ps1` does not have (the call failed with a PowerShell parameter error; support ticket d3372592): the metadata file is located from the `Rights.xml` path. The section now lists the real parameters (`-RightsPath` / `-Path`, `-OutFile`, `-Detailed`, `-MaxErrors`). The manual fallback for rights-only edits of an existing role contradicted `SKILL.md → Hard rule`; it is now one of its documented exceptions, because no tool edits a role in place.
 
 ### Upstream sync `2026-07-30`
 
