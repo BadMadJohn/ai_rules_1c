@@ -58,6 +58,10 @@ The PowerShell scripts under `tools/1c-cf-manage/scripts/` were refreshed from [
 
 ## cfe-manage.md
 
+### Local fix `2026-10-19` — an element `CommandSet` keeps its `ExcludedCommand` list
+
+`cfe-borrow` v1.10 → **v1.11** (support ticket 2b392369, an addition to 4e6f4e67): `Borrow-Form` removed every `ExcludedCommand` inside `ChildItems`, so an element whose base form excludes standard commands (a tabular-section table without `Add` / `Copy`) got an empty `<CommandSet></CommandSet>` in the form and in `BaseForm`. Configurator keeps the element's `CommandSet` with its `ExcludedCommand` list in both parts and drops an empty one on load, so the check dump after a partial load differed from the source directory. The element `CommandSet` is now copied as is. Pinned by `tools/tests/cfe-borrow-regression.ps1`.
+
 ### Local fix `2026-10-18` — borrowing follows Configurator 2.20
 
 `cfe-borrow` v1.9 → **v1.10**, `cfe-validate` v1.4 → **v1.5** (support ticket 4e6f4e67):

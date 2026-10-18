@@ -57,6 +57,16 @@
 			<ContextMenu name="ПодсказкаКонтекстноеМеню" id="8"/>
 			<ExtendedTooltip name="ПодсказкаРасширеннаяПодсказка" id="9"/>
 		</LabelDecoration>
+		<Table name="Таблица" id="10">
+			<Representation>List</Representation>
+			<CommandSet>
+				<ExcludedCommand>Add</ExcludedCommand>
+				<ExcludedCommand>Copy</ExcludedCommand>
+			</CommandSet>
+			<ContextMenu name="ТаблицаКонтекстноеМеню" id="11"/>
+			<AutoCommandBar name="ТаблицаКоманднаяПанель" id="12"/>
+			<ExtendedTooltip name="ТаблицаРасширеннаяПодсказка" id="13"/>
+		</Table>
 	</ChildItems>
 	<Attributes>
 		<Attribute name="Объект" id="1">

@@ -1,4 +1,4 @@
-﻿# cfe-borrow v1.10 — Borrow objects from configuration into extension (CFE)
+﻿# cfe-borrow v1.11 — Borrow objects from configuration into extension (CFE)
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 # Local: BaseForm indents only between tags; a multi-line text keeps its bytes.
 # Local: Configurator 2.20 shapes — form InternalInfo PropertyState, CommandSet kept, no empty form module,
@@ -6,6 +6,7 @@
 #        one attribute / tabular-section column per -Object; -BorrowMainAttribute Only.
 #        Detect-FormatVersion uses the string length, not the file byte length.
 #        A style:X that is not borrowed and is not a platform style item is stripped.
+#        An element CommandSet keeps its ExcludedCommand list (no empty CommandSet).
 param(
 	[Parameter(Mandatory)][string]$ExtensionPath,
 	[Parameter(Mandatory)][string]$ConfigPath,
@@ -646,8 +647,8 @@ function Borrow-Form {
 		# Strip data-binding tags whose root attribute isn't borrowed
 		# (DataPath/TitleDataPath/FooterDataPath/HeaderDataPath/MultipleValue*/RowPicture*)
 		$childItemsXml = Strip-FormBindings $childItemsXml ([bool]$KeepObjektBindings)
-		# Strip ExcludedCommand in nested AutoCommandBars (references to standard commands invalid in extension)
-		$childItemsXml = [regex]::Replace($childItemsXml, '\s*<ExcludedCommand>[^<]*</ExcludedCommand>', '')
+		# An element CommandSet keeps its ExcludedCommand list: Configurator writes it in both parts
+		# of a borrowed form and drops an empty one on load.
 		# Strip TypeLink blocks with human-readable DataPath (Items.XXX — can't convert to UUID)
 		$childItemsXml = [regex]::Replace($childItemsXml, '(?s)\s*<TypeLink>\s*<xr:DataPath>Items\.[^<]*</xr:DataPath>.*?</TypeLink>', '')
 		# Strip element-level Events (base form handlers not in extension)

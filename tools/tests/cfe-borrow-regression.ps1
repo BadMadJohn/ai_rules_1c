@@ -24,6 +24,9 @@
          borrowed form references but the extension does not borrow. cfe-borrow
          left a style: reference to an unborrowed configuration style item.
       8. Detect-FormatVersion passed the file byte length to String.Substring.
+      9. ExcludedCommand was removed inside ChildItems, leaving an element (a
+         table without Add / Copy) with an empty CommandSet in both parts
+         (ticket 2b392369).
 
     The fixtures under fixtures/cfe-borrow/ are materialized with CRLF and a
     UTF-8 BOM into a temp directory; no 1C platform or infobase is needed.
@@ -298,6 +301,15 @@ Register-Case 'form: -BorrowMainAttribute Only adds the main attribute without t
     $obj = Read-Text (Join-Path $ws.Ext 'Documents\Zakaz.xml')
     Assert-True (-not ($obj -match '<Attribute ')) 'object attributes cascaded into the borrowed document'
     Assert-True (-not (Test-Path (Join-Path $ws.Ext 'Catalogs\Kontragenty.xml'))) 'attribute type objects cascaded'
+}
+
+Register-Case 'form: an element CommandSet keeps its ExcludedCommand list in the form and BaseForm' {
+    param($work)
+    $ws = New-Workspace $work
+    Invoke-Borrow $ws $FormObject | Out-Null
+    $out = Read-Text (Join-Path $ws.Ext "$FormRel\Ext\Form.xml")
+    Assert-Equal 2 ([regex]::Matches($out, '<CommandSet>\s*<ExcludedCommand>Add</ExcludedCommand>\s*<ExcludedCommand>Copy</ExcludedCommand>\s*</CommandSet>')).Count 'table CommandSet with Add/Copy in the form and in BaseForm'
+    Assert-Equal 0 ([regex]::Matches($out, '<CommandSet>\s*</CommandSet>|<CommandSet/>')).Count 'empty CommandSet in the borrowed form'
 }
 
 # ---------------------------------------------------------------- 4. ChildObjects order
