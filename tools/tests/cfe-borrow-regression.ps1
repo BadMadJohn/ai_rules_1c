@@ -15,9 +15,9 @@
       3. A single attribute (or tabular-section column) could not be borrowed,
          and the main attribute came only with the whole data-path cascade.
       4. A new extension ChildObjects entry was sorted by name inside its type
-         group; Configurator appends it to the end of the group. (The by-name
-         order of the main configuration, APK:1108, belongs to cf-edit /
-         meta-compile and stays pinned by metadata-tools-regression.ps1.)
+         group; Configurator appends it to the end of the group. (In the main
+         configuration cf-edit / meta-compile follow NEW_OBJECT_POSITION, pinned
+         by metadata-tools-regression.ps1.)
       5. A borrowed form always got an empty Ext/Form/Module.bsl.
       6. A borrowed Document had no <RegisterRecords/>.
       7. cfe-validate check 12 only warned about a CommonPicture / StyleItem the

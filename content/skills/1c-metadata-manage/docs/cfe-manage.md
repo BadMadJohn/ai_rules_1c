@@ -67,7 +67,7 @@ Creates XML files with `ObjectBelonging=Adopted` and `ExtendedConfigurationObjec
 
 ### What the borrowed XML looks like (Configurator, format 2.20)
 
-- **Extension `ChildObjects`** — a new entry goes to the end of its type group, as Configurator appends a borrowed object; it is not sorted by name. The by-name order of APK:1108 is the main configuration's rule (`cf-edit`, `meta-compile`), not the extension's.
+- **Extension `ChildObjects`** — a new entry goes to the end of its type group, as Configurator appends a borrowed object; it is not sorted by name. In the main configuration `cf-edit` and `meta-compile` place a new entry by `NEW_OBJECT_POSITION` (end of the group by default, by name — APK:1108 — with `byName`).
 - **Document** — `Properties` end with an empty `<RegisterRecords/>`.
 - **One attribute or column** — `ExtendedConfigurationObject` is the source attribute's uuid and `<Type>` is the source attribute's `<Type>`. A column brings its tabular section (adopted, with its generated types, without the other columns). The objects named in the type are borrowed as shells; nothing else cascades. Repeating the call changes nothing.
 - **Form metadata** `Forms/<Form>.xml` — the form has its own `Ext/Form.xml`, and Configurator records that as the `Form` / `Extended` property state in `InternalInfo` (block below).
