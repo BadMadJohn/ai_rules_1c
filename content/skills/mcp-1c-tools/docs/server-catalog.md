@@ -12,7 +12,7 @@
 | `cognee`, `openviking` *(optional)* | Memory providers | [memory-providers.md](memory-providers.md) |
 | `1c-data-mcp` | Live-IB execution over `hs/mcp` | [1c-data-mcp.md](1c-data-mcp.md) |
 | `1c-qa` | QA MCP: test manager driving a 1C test client — UI checks under `UI_TESTING` | `content/skills/1c-qa-testing/SKILL.md` |
-| `1c-kd20` *(conditional)* | «Конвертация данных» 2.0 exchange rules: matching, authoring, validation by the БСП runtime, registration rules, review of existing rules, optional sandbox checks; read-only EnterpriseData (КД 3) exchange manager checks. Installed separately; only for exchange-rule tasks | [mcp-conversion-data20.md](mcp-conversion-data20.md) |
+| `1c-kd20` *(conditional)* | «Конвертация данных» 2.0 exchange rules: matching, authoring, validation by the БСП runtime, registration rules, review of existing rules, optional sandbox checks; read-only EnterpriseData (КД 3) exchange manager checks; profiles and launch strings of the two exchange bases. Installed separately; only for exchange-rule tasks | [mcp-conversion-data20.md](mcp-conversion-data20.md) |
 | `edt-mcp` *(conditional)* | Live EDT workspace | [edt-mcp.md](edt-mcp.md) |
 
 ### Optional pre-alpha servers
