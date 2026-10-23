@@ -1857,6 +1857,85 @@ Register-Case 'form-edit: move and remove keep BOM and EOL of an LF and a CRLF f
     }
 }
 
+# ---------------------------------------------------------------- form-edit conditionalAppearance
+
+Register-Case 'form-edit: conditionalAppearance creates the block, a second run appends, a new attribute still goes before it' {
+    param($work)
+    $target = Initialize-FormEditCase $work
+    $before = Get-FileFacts $target
+    $first = (Read-JsonFixture 'form-edit\defs\ca-first.json').conditionalAppearance[0]
+    $run = Invoke-FormEditDef $work $target 'ca-first.json'
+    Assert-Equal 0 $run.ExitCode "form-edit (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    Assert-True ($run.StdOut -notmatch '\[WARN\]') "unexpected warning: $($run.StdOut)"
+    $after = Get-FileFacts $target
+    Assert-StyleKept $before $after 'ca first'
+    Assert-Equal 1 (Get-FormNodes $after '/f:Form/f:Attributes/f:ConditionalAppearance').Count 'one ConditionalAppearance'
+    Assert-Equal 1 (Get-FormNodes $after '/f:Form/f:Attributes/f:ConditionalAppearance/*[local-name()="item"]').Count 'one item'
+    Assert-Equal $first.selection[0] (Get-FormNodes $after '//*[local-name()="selection"]/*[local-name()="item"]/*[local-name()="field"]')[0].InnerText 'selection field'
+    Assert-Equal 'Attribute,ConditionalAppearance' (Get-ChildTags $after '/f:Form/f:Attributes') 'ConditionalAppearance is the last child of Attributes'
+    Assert-Equal ((Get-ElementIds $before | Sort-Object) -join ',') ((Get-ElementIds $after | Sort-Object) -join ',') 'element ids'
+    Assert-OnlyAdditions $before $after 'ca first'
+    Assert-NoBlankLines $after 'ca first'
+    Assert-FormValid $target 'ca first'
+
+    # the same form again: the items join the existing block
+    $run2 = Invoke-FormEditDef $work $target 'ca-second.json'
+    Assert-Equal 0 $run2.ExitCode "second run (stdout: $($run2.StdOut) stderr: $($run2.StdErr))"
+    Assert-True ($run2.StdOut -match '\[WARN\].*selection field') "no warning for the unknown field: $($run2.StdOut)"
+    $mid = Get-FileFacts $target
+    Assert-Equal 1 (Get-FormNodes $mid '/f:Form/f:Attributes/f:ConditionalAppearance').Count 'still one ConditionalAppearance'
+    Assert-Equal 2 (Get-FormNodes $mid '/f:Form/f:Attributes/f:ConditionalAppearance/*[local-name()="item"]').Count 'two items'
+    $second = (Read-JsonFixture 'form-edit\defs\ca-second.json').conditionalAppearance[0]
+    $fields = @((Get-FormNodes $mid '/f:Form/f:Attributes/f:ConditionalAppearance/*[local-name()="item"][2]//*[local-name()="field"]') | ForEach-Object { $_.InnerText })
+    Assert-Equal ($second.selection -join ',') ($fields -join ',') 'fields of the second item'
+    Assert-OnlyAdditions $after $mid 'ca second'
+    Assert-NoBlankLines $mid 'ca second'
+
+    # an attribute added later goes before the block, not after it
+    $run3 = Invoke-FormEditDef $work $target 'attribute-save.json'
+    Assert-Equal 0 $run3.ExitCode "attributes (stdout: $($run3.StdOut) stderr: $($run3.StdErr))"
+    $last = Get-FileFacts $target
+    Assert-Equal 'Attribute,Attribute,Attribute,ConditionalAppearance' (Get-ChildTags $last '/f:Form/f:Attributes') 'attributes before ConditionalAppearance'
+    Assert-NoBlankLines $last 'ca then attributes'
+    Assert-FormValid $target 'ca then attributes'
+}
+
+Register-Case 'form-edit: conditionalAppearance declares the prefixes of its colours once on the form' {
+    param($work)
+    $mini = Join-Path $work 'mini'
+    Copy-Fixture 'epf-with-form' $mini
+    $miniForm = Join-Path $mini 'Obrabotka\Forms\MainForm\Ext\Form.xml'
+    $before = Get-FileFacts $miniForm
+    $run = Invoke-Tool $FormEdit @('-FormPath', $miniForm, '-JsonPath', (Join-Path $FixturesDir 'form-edit\defs\ca-mini.json')) $mini
+    Assert-Equal 0 $run.ExitCode "mini form (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    $facts = Get-FileFacts $miniForm
+    foreach ($p in @('web', 'style', 'dcsset', 'dcscor', 'v8ui', 'xsi')) {
+        Assert-Equal 1 ([regex]::Matches($facts.Text, "xmlns:$p=")).Count "xmlns:$p declared once"
+        Assert-True ($facts.Text -match "<Form [^>]*xmlns:$p=") "xmlns:$p sits on <Form>"
+    }
+    $inner = $facts.Text.Substring($facts.Text.IndexOf('>', $facts.Text.IndexOf('<Form ')))
+    Assert-True ($inner -notmatch 'xmlns') 'no declarations below <Form>'
+    Assert-Equal 'AutoCommandBar,Attributes' (Get-ChildTags $facts '/f:Form') 'Attributes created'
+    Assert-Equal 1 (Get-FormNodes $facts '/f:Form/f:Attributes/f:ConditionalAppearance/*[local-name()="item"]').Count 'one item'
+    Assert-True ($facts.Text -match '>web:Red<') 'web colour kept'
+    Assert-True ($facts.Text -match '>style:FormBackColor<') 'style colour kept'
+}
+
+Register-Case 'form-edit: conditionalAppearance keeps BOM and EOL of an LF and a CRLF form' {
+    param($work)
+    foreach ($eol in @("`n", "`r`n")) {
+        $dir = Join-Path $work $(if ($eol -eq "`n") { 'lf' } else { 'crlf' })
+        $target = Initialize-FormEditCase $dir $eol
+        $before = Get-FileFacts $target
+        $run = Invoke-FormEditDef $dir $target 'ca-first.json'
+        Assert-Equal 0 $run.ExitCode "form-edit (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+        $after = Get-FileFacts $target
+        Assert-StyleKept $before $after 'ca first' $eol
+        Assert-Equal 1 (Get-FormNodes $after '/f:Form/f:Attributes/f:ConditionalAppearance').Count 'ConditionalAppearance written'
+        Assert-OnlyAdditions $before $after 'ca first'
+    }
+}
+
 function Assert-CompactXml([string]$Path) {
     $facts = Get-FileFacts $Path
     [xml]$parsed = $facts.Text

@@ -200,7 +200,7 @@ Only when `form-compile` reports an unknown key or rejects a construct — open 
 
 ## 4. Edit — Add, Change, Move, Remove
 
-Adds elements, attributes, and/or commands to an existing Form.xml, changes properties and events of existing elements and of the form (`set`), moves (`move`) and removes (`remove`) existing elements. Automatically allocates IDs from the correct pool, generates companion elements (ContextMenu, ExtendedTooltip, etc.) and event handlers.
+Adds elements, attributes, and/or commands to an existing Form.xml, changes properties and events of existing elements and of the form (`set`), moves (`move`) and removes (`remove`) existing elements, and appends conditional appearance items (`conditionalAppearance`). Automatically allocates IDs from the correct pool, generates companion elements (ContextMenu, ExtendedTooltip, etc.) and event handlers.
 
 Elements and attributes are compiled by `1c-form-compile`: `form-edit` writes the new items into a temporary DSL, compiles it, takes the generated nodes, gives them fresh IDs from the free pools of the form and inserts them with the indent of their container. Every key `form-compile` understands works here, and its warnings (`unknown key ... ignored`, unrecognized enum values) are shown as they are. Commands, `formEvents` and `elementEvents` are written by `form-edit` itself.
 
@@ -308,7 +308,19 @@ Each element is removed with its subtree (companions, columns, nested items) and
 
 The `DataPath` of the removed element itself is not a reference. After a removal `form-edit` prints `[INFO]` for every event handler of the removed subtree that is still a procedure or function in `Module.bsl`: the `Events` and the commands' `Action`s are not touched, delete the handler by hand when nothing else calls it.
 
-**Order of one JSON:** `remove`, `move`, `set`, then the additions (`elements`, `attributes`, `commands`, `formEvents`, `elementEvents`). Each step sees the result of the previous one; `set` on a removed element and the same element in `remove` and `move` are refused.
+**Order of one JSON:** `remove`, `move`, `set`, then the additions (`elements`, `attributes`, `conditionalAppearance`, `commands`, `formEvents`, `elementEvents`). Each step sees the result of the previous one; `set` on a removed element and the same element in `remove` and `move` are refused.
+
+### Conditional appearance of the form — `conditionalAppearance`
+
+```json
+{ "conditionalAppearance": [
+  { "selection": ["Contractor"], "filter": ["Object.Amount > 100"],
+    "appearance": { "ЦветТекста": "web:Red", "ЦветФона": "style:FormBackColor" },
+    "presentation": "Highlight" }
+] }
+```
+
+The grammar is the one of `form-compile` ([`form-compile-dsl.md`](form-compile-dsl.md), *conditionalAppearance*: `selection`, `filter`, `appearance`, `presentation`, `viewMode`, `userSettingID`, `use`). `form-edit` compiles the items and appends them to the form's own `<ConditionalAppearance>` — the last child of `<Attributes>` (an extension form keeps its own block there, the `BaseForm` copy is not touched); the block and `<Attributes>` are created when absent. Items are only added: an existing item is never changed. Attributes added in the same JSON (or later) go before the block. The prefixes the items use (`dcsset`, `dcscor`, `v8ui`, `xs`, `xsi`, `web`, `style`, ...) are declared once on `<Form>` when it lacks them. A `selection` field that names no element of the form (after the edit, the elements of the same JSON included) is a `[WARN]`, not a refusal — the compiler does not check it either.
 
 ### Output
 

@@ -1,4 +1,4 @@
-﻿# form-edit v1.9 — Edit 1C managed form elements
+﻿# form-edit v1.10 — Edit 1C managed form elements
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 # Local: DynamicList attributes require settings.mainTable or settings.query
 # and emit <Settings xsi:type="DynamicList">. An attribute without a source
@@ -25,6 +25,9 @@
 # another place, `remove` takes elements out with their companions; a removal that is still
 # referenced (AdditionSource, StandardCommand buttons, ConditionalAppearance, Items.X data paths,
 # Elements.X in Module.bsl) is refused unless "force": true. Order: remove, move, set, additions.
+# Local (v1.10): `conditionalAppearance` appends the compiled items to the form's own
+# ConditionalAppearance (last child of Attributes, created when absent); an attribute added to
+# a form that has one now goes before it.
 param(
 	[Parameter(Mandatory)]
 	[Alias('Path')]
@@ -593,6 +596,26 @@ function Ensure-TargetCI($target) {
 		return $ci
 	}
 	return (Ensure-ChildItems $owner)
+}
+
+# The Attributes section of the form, created when absent (after ChildItems, else Events, else AutoCommandBar).
+function Ensure-AttrsSection {
+	$attrsSection = $root.SelectSingleNode("f:Attributes", $nsMgr)
+	if ($attrsSection) { return $attrsSection }
+	$attrsSection = $xmlDoc.CreateElement("Attributes", $formNs)
+	$insertAfter = $rootCI
+	if (-not $insertAfter) { $insertAfter = $root.SelectSingleNode("f:Events", $nsMgr) }
+	if (-not $insertAfter) { $insertAfter = $root.SelectSingleNode("f:AutoCommandBar", $nsMgr) }
+	if ($insertAfter) {
+		$refNode = $insertAfter.NextSibling
+		$ws = $xmlDoc.CreateWhitespace("`r`n`t")
+		$root.InsertBefore($ws, $refNode) | Out-Null
+		$root.InsertBefore($attrsSection, $refNode) | Out-Null
+	} else {
+		$root.AppendChild($xmlDoc.CreateWhitespace("`r`n`t")) | Out-Null
+		$root.AppendChild($attrsSection) | Out-Null
+	}
+	return $attrsSection
 }
 
 # === 9. Generate fragment, parse, import nodes ===
@@ -1638,28 +1661,7 @@ if ($hasElems -or $hasAttrs) {
 
 	# --- Attributes ---
 	if ($srcAttrs.Count -gt 0) {
-		$attrsSection = $root.SelectSingleNode("f:Attributes", $nsMgr)
-		if (-not $attrsSection) {
-			# Create Attributes section — insert after ChildItems or after Events
-			$attrsSection = $xmlDoc.CreateElement("Attributes", $formNs)
-			# Find insertion point: after ChildItems or after the last pre-Attributes element
-			$insertAfter = $rootCI
-			if (-not $insertAfter) {
-				$insertAfter = $root.SelectSingleNode("f:Events", $nsMgr)
-			}
-			if (-not $insertAfter) {
-				$insertAfter = $root.SelectSingleNode("f:AutoCommandBar", $nsMgr)
-			}
-			if ($insertAfter) {
-				$refNode = $insertAfter.NextSibling
-				$ws = $xmlDoc.CreateWhitespace("`r`n`t")
-				$root.InsertBefore($ws, $refNode) | Out-Null
-				$root.InsertBefore($attrsSection, $refNode) | Out-Null
-			} else {
-				$root.AppendChild($xmlDoc.CreateWhitespace("`r`n`t")) | Out-Null
-				$root.AppendChild($attrsSection) | Out-Null
-			}
-		}
+		$attrsSection = Ensure-AttrsSection
 
 		# Detect indent for attribute children
 		$attrChildIndent = Get-ChildIndent $attrsSection
@@ -1676,8 +1678,78 @@ if ($hasElems -or $hasAttrs) {
 			foreach ($col in $node.SelectNodes("f:Columns//f:Column", $nsMgr)) { $col.SetAttribute("id", [string]$colId); $colId++ }
 			$typeStr = $dslAttrTypes[$node.GetAttribute("name")]
 			$addedAttrs += "  + $($node.GetAttribute('name')): $typeStr (id=$attrId)"
-			Insert-IntoContainer -container $attrsSection -newNode $node -afterName $null -childIndent $attrChildIndent
+			# the form's ConditionalAppearance is the last child of Attributes: attributes go before it
+			$caExisting = Get-ChildByTag $attrsSection 'ConditionalAppearance'
+			if ($caExisting) {
+				$attrsSection.InsertBefore($node, $caExisting) | Out-Null
+				$attrsSection.InsertBefore($xmlDoc.CreateWhitespace("`r`n$attrChildIndent"), $caExisting) | Out-Null
+			} else {
+				Insert-IntoContainer -container $attrsSection -newNode $node -afterName $null -childIndent $attrChildIndent
+			}
 		}
+	}
+}
+
+# === 11. Conditional appearance of the form ===
+# form-compile writes it as the last child of <Attributes> (the grammar of a dynamic list's
+# conditionalAppearance, form-dsl-spec.md 7c); the compiled items are appended to the form's own
+# block, which is created when there is none. A selection field that is no element of the form is
+# a warning: the compiler does not check it either.
+
+$addedCA = @()
+
+if ($def.conditionalAppearance -and @($def.conditionalAppearance).Count -gt 0) {
+	$caDsl = [pscustomobject]@{ conditionalAppearance = @($def.conditionalAppearance) }
+	$caDoc = Invoke-FormCompileFragment $caDsl
+	$caNs = New-Object System.Xml.XmlNamespaceManager($caDoc.NameTable)
+	$caNs.AddNamespace("f", $formNs)
+	$caNs.AddNamespace("dcsset", "http://v8.1c.ru/8.1/data-composition-system/settings")
+	$srcCA = $caDoc.DocumentElement.SelectSingleNode("f:Attributes/f:ConditionalAppearance", $caNs)
+	$srcItems = @()
+	if ($srcCA) { $srcItems = @($srcCA.SelectNodes("dcsset:item", $caNs)) }
+	if ($srcItems.Count -eq 0) {
+		Write-Host "[ERROR] conditionalAppearance: form-compile produced no items - nothing was written"
+		exit 1
+	}
+	Ensure-Namespaces $caDoc $srcItems
+
+	# selection fields: elements the form has (after this edit) plus the new ones
+	$known = @{}
+	foreach ($nn in @(Get-NamedNodes)) { $known[$nn.GetAttribute("name")] = $true }
+	foreach ($f in $srcItems) {
+		foreach ($fld in @($f.SelectNodes("dcsset:selection/dcsset:item/dcsset:field", $caNs))) {
+			$fname = $fld.InnerText.Trim()
+			if (-not $known.ContainsKey($fname)) {
+				Write-Host "[WARN] conditionalAppearance: selection field '$fname' is not an element of the form"
+			}
+		}
+	}
+
+	$attrsSectionCA = Ensure-AttrsSection
+	$caNode = Get-ChildByTag $attrsSectionCA 'ConditionalAppearance'
+	if (-not $caNode) {
+		$caNode = $xmlDoc.CreateElement("ConditionalAppearance", $formNs)
+		Insert-IntoContainer -container $attrsSectionCA -newNode $caNode -afterName $null -childIndent (Get-ChildIndent $attrsSectionCA)
+	}
+	$caSrcIndent = Get-ChildIndent $srcCA
+	$caDstIndent = (Get-ChildIndent $attrsSectionCA) + "`t"
+	# after the last item; the block's own viewMode / userSettingID (if any) stay behind it
+	$lastItem = $null
+	foreach ($c in $caNode.ChildNodes) { if ($c.NodeType -eq 'Element' -and $c.LocalName -eq 'item') { $lastItem = $c } }
+	foreach ($si in $srcItems) {
+		$imp = $xmlDoc.ImportNode($si, $true)
+		Set-NodeIndent $imp $caSrcIndent $caDstIndent
+		if ($lastItem) {
+			$ref = $lastItem.NextSibling
+			$caNode.InsertBefore($xmlDoc.CreateWhitespace("`r`n$caDstIndent"), $ref) | Out-Null
+			$caNode.InsertBefore($imp, $ref) | Out-Null
+		} else {
+			Insert-IntoContainer -container $caNode -newNode $imp -afterName $null -childIndent $caDstIndent
+		}
+		$lastItem = $imp
+		$fields = @($imp.SelectNodes("dcsset:selection/dcsset:item/dcsset:field", $nsMgr) | ForEach-Object { $_.InnerText.Trim() })
+		$fieldStr = if ($fields.Count -gt 0) { $fields -join ', ' } else { "(all)" }
+		$addedCA += "  + selection: $fieldStr"
 	}
 }
 
@@ -1969,6 +2041,12 @@ if ($addedAttrs.Count -gt 0) {
 	Write-Host ""
 }
 
+if ($addedCA.Count -gt 0) {
+	Write-Host "Added conditional appearance:"
+	foreach ($line in $addedCA) { Write-Host $line }
+	Write-Host ""
+}
+
 if ($addedCmds.Count -gt 0) {
 	Write-Host "Added commands:"
 	foreach ($line in $addedCmds) { Write-Host $line }
@@ -1988,5 +2066,6 @@ if ($addedElems.Count -gt 0) {
 }
 if ($addedAttrs.Count -gt 0) { $totalParts += "$($addedAttrs.Count) attribute(s)" }
 if ($addedCmds.Count -gt 0) { $totalParts += "$($addedCmds.Count) command(s)" }
+if ($addedCA.Count -gt 0) { $totalParts += "$($addedCA.Count) conditional appearance item(s)" }
 Write-Host "Total: $($totalParts -join ', ')"
 Write-Host "Run /form-validate to verify."
