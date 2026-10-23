@@ -202,6 +202,8 @@ Only when `form-compile` reports an unknown key or rejects a construct — open 
 
 Adds elements, attributes, and/or commands to an existing Form.xml. Automatically allocates IDs from the correct pool, generates companion elements (ContextMenu, ExtendedTooltip, etc.) and event handlers.
 
+Elements and attributes are compiled by `1c-form-compile`: `form-edit` writes the new items into a temporary DSL, compiles it, takes the generated nodes, gives them fresh IDs from the free pools of the form and inserts them with the indent of their container. Every key `form-compile` understands works here, and its warnings (`unknown key ... ignored`, unrecognized enum values) are shown as they are. Commands, `formEvents` and `elementEvents` are written by `form-edit` itself.
+
 Saving uses Configurator-style compact empty tags (`<Tag/>`) and retains the existing CRLF or LF line endings. Literal text in CDATA, comments and processing instructions is excluded from empty-tag normalization.
 
 ### Usage
@@ -244,14 +246,19 @@ powershell.exe -NoProfile -File skills/1c-metadata-manage/tools/1c-form-edit/scr
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `into` | root ChildItems | Name of group/table/page to insert into |
-| `after` | at end | Name of element to insert after |
+| `into` | root ChildItems | Name of the container to insert into: a group, pages, page, table, command bar (`CommandBar`), button group, popup, or a companion command bar / context menu of any element (`<Table>КоманднаяПанель`, `<Field>КонтекстноеМеню`) or the form's own `ФормаКоманднаяПанель` |
+| `after` | at end | Name of element to insert after (searched in the whole form, its parent container is the target unless `into` is given) |
+| `before` | at end | Name of element to insert before; the new elements keep their DSL order ahead of it. Excludes `after` (both → `[ERROR]`, nothing written) |
+
+Into a command bar, context menu, popup or button group only buttons, button groups and popups go; they are compiled with the command-bar rules (`CommandBarButton`). A button (button group, popup) given `into` a **Table** is refused: the ChildItems of a table hold its columns, the message names the table's command bar to use. A missing `ChildItems` is created, a self-closing `<AutoCommandBar .../>` is opened on its own lines.
 
 #### Element keys, events, types
 
 Same DSL as `1c-form-compile` — element keys, `command` / `stdCommand`, event names and attribute types are in [`form-compile-dsl.md`](form-compile-dsl.md); the companion elements each type receives (ContextMenu, ExtendedTooltip, AutoCommandBar, …) are listed in its *Auto-generation* section. Groups and tables support `children` / `columns` for nested elements.
 
-A `DynamicList` attribute **must** carry `settings.mainTable` and/or `settings.query`. Without a source the designer accepts the XML, but the form fails to open (`Основная таблица динамического списка задана неверно`). `form-edit` refuses that JSON before writing; `form-validate` reports the same gap on an existing form. The `settings` keys are the ones in [`form-compile-dsl.md`](form-compile-dsl.md) (`mainTable`, `query`, `manualQuery`, `dynamicDataRead`). `form-edit` emits those four; filters / order / conditional appearance stay with `form-compile`.
+A `DynamicList` attribute **must** carry `settings.mainTable` and/or `settings.query`. Without a source the designer accepts the XML, but the form fails to open (`Основная таблица динамического списка задана неверно`). `form-edit` refuses that JSON before writing; `form-validate` reports the same gap on an existing form. The `settings` keys are the ones in [`form-compile-dsl.md`](form-compile-dsl.md); the attribute is written by `form-compile`, so filters / order / conditional appearance come out as they do there.
+
+Behaviour of the compiler that `form-edit` now shares: an element without `title` gets a title derived from its name (`title: ""` suppresses it), an attribute likewise; explicit `false` / `true` values (`showTitle`, `autoMaxWidth`, ...) are written as given; an unknown event name is a refusal, not a warning. `form-compile` infers a main attribute from a single object-like attribute; `form-edit` turns that off (`main: false` unless the attribute has its own `main` key), the form being edited has its own. A table bound to a `DynamicList` attribute that already exists in the form gets the list-table defaults of `form-compile`.
 
 ### Output
 
@@ -259,7 +266,7 @@ A `DynamicList` attribute **must** carry `settings.mainTable` and/or `settings.q
 === form-edit: FormName ===
 
 Added elements (into HeaderGroup, after Contractor):
-  + [Input] Warehouse -> Object.Warehouse {OnChange}
+  + [InputField] Warehouse -> Object.Warehouse {OnChange}
 
 Added attributes:
   + TotalAmount: decimal(15,2) (id=12)

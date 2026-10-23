@@ -1,4 +1,4 @@
-﻿# form-edit v1.6 — Edit 1C managed form elements
+﻿# form-edit v1.7 — Edit 1C managed form elements
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 # Local: DynamicList attributes require settings.mainTable or settings.query
 # and emit <Settings xsi:type="DynamicList">. An attribute without a source
@@ -7,6 +7,16 @@
 # Local: Button and Command children are written in the platform order, and a
 # command's picture-and-text Representation is TextPicture - the upstream order
 # and value were refused with an XDTO exception on load.
+# Local (v1.7): elements and attributes are compiled by form-compile (the same DSL
+# keys, the same output) and imported with fresh ids and the target's indent - the
+# reduced emitters of v1.6 dropped textEdit, maxWidth, chooseType, minValue / maxValue,
+# choiceParameters, choiceParameterLinks, choiceList, format, save and the
+# AdditionSource of table additions with «unknown key ... ignored». Commands,
+# formEvents and elementEvents keep their own emitters.
+# Local (v1.7): `before` places the new elements ahead of a named element; `into`
+# also takes a command bar, context menu, popup or button group (a table's, an
+# element's, the form's own AutoCommandBar). A button in the ChildItems of a Table
+# is refused - its columns live there, the buttons go to the table's command bar.
 param(
 	[Parameter(Mandatory)]
 	[Alias('Path')]
@@ -243,11 +253,14 @@ if ($rootCI) {
 		}
 	}
 }
+# The form's own AutoCommandBar (id -1) and the buttons inside it
 $acb = $root.SelectSingleNode("f:AutoCommandBar", $nsMgr)
 if ($acb) {
-	$id = $acb.GetAttribute("id")
-	if ($id -and $id -ne "-1") {
-		try { $intId = [int]$id; if ($intId -gt $script:nextElemId) { $script:nextElemId = $intId } } catch {}
+	foreach ($elem in $acb.SelectNodes("descendant-or-self::*[@id]")) {
+		$id = $elem.GetAttribute("id")
+		if ($id -and $id -ne "-1") {
+			try { $intId = [int]$id; if ($intId -gt $script:nextElemId) { $script:nextElemId = $intId } } catch {}
+		}
 	}
 }
 
@@ -292,10 +305,9 @@ function New-ElemId { $id = $script:nextElemId; $script:nextElemId++; return $id
 function New-AttrId { $id = $script:nextAttrId; $script:nextAttrId++; return $id }
 function New-CmdId { $id = $script:nextCmdId; $script:nextCmdId++; return $id }
 
-# For element emitters, New-Id = New-ElemId
-function New-Id { return New-ElemId }
-
-# === 5. Fragment helpers (StringBuilder + Emit-* from form-compile) ===
+# === 5. Fragment helpers (StringBuilder) for commands and events ===
+# Elements and attributes do not come from here: they are compiled by form-compile
+# (section 9). Only the emitters of commands, formEvents and elementEvents stay local.
 
 $script:xml = New-Object System.Text.StringBuilder 4096
 
@@ -319,116 +331,6 @@ function Emit-MLText {
 	X "$indent</$tag>"
 }
 
-# --- Type emitter ---
-
-$script:formTypeSynonyms = New-Object System.Collections.Hashtable
-$script:formTypeSynonyms["строка"]   = "string"
-$script:formTypeSynonyms["число"]    = "decimal"
-$script:formTypeSynonyms["булево"]   = "boolean"
-$script:formTypeSynonyms["дата"]     = "date"
-$script:formTypeSynonyms["датавремя"]= "dateTime"
-$script:formTypeSynonyms["number"]   = "decimal"
-$script:formTypeSynonyms["bool"]     = "boolean"
-$script:formTypeSynonyms["справочникссылка"]            = "CatalogRef"
-$script:formTypeSynonyms["справочникобъект"]            = "CatalogObject"
-$script:formTypeSynonyms["документссылка"]              = "DocumentRef"
-$script:formTypeSynonyms["документобъект"]              = "DocumentObject"
-$script:formTypeSynonyms["перечислениессылка"]           = "EnumRef"
-$script:formTypeSynonyms["плансчетовссылка"]             = "ChartOfAccountsRef"
-$script:formTypeSynonyms["планвидовхарактеристикссылка"] = "ChartOfCharacteristicTypesRef"
-$script:formTypeSynonyms["планвидоврасчётассылка"]        = "ChartOfCalculationTypesRef"
-$script:formTypeSynonyms["планвидоврасчетассылка"]        = "ChartOfCalculationTypesRef"
-$script:formTypeSynonyms["планобменассылка"]              = "ExchangePlanRef"
-$script:formTypeSynonyms["бизнеспроцессссылка"]           = "BusinessProcessRef"
-$script:formTypeSynonyms["задачассылка"]                  = "TaskRef"
-$script:formTypeSynonyms["определяемыйтип"]             = "DefinedType"
-
-function Resolve-TypeStr {
-	param([string]$typeStr)
-	if (-not $typeStr) { return $typeStr }
-	if ($typeStr -match '^([^(]+)\((.+)\)$') {
-		$base = $Matches[1].Trim(); $params = $Matches[2]
-		$r = $script:formTypeSynonyms[$base.ToLower()]
-		if ($r) { return "$r($params)" }
-		return $typeStr
-	}
-	if ($typeStr.Contains('.')) {
-		$i = $typeStr.IndexOf('.')
-		$prefix = $typeStr.Substring(0, $i); $suffix = $typeStr.Substring($i)
-		$r = $script:formTypeSynonyms[$prefix.ToLower()]
-		if ($r) { return "$r$suffix" }
-		return $typeStr
-	}
-	$r = $script:formTypeSynonyms[$typeStr.ToLower()]
-	if ($r) { return $r }
-	return $typeStr
-}
-
-function Emit-Type {
-	param($typeStr, [string]$indent)
-	if (-not $typeStr) { X "$indent<Type/>"; return }
-	$typeString = "$typeStr"
-	$parts = $typeString -split '\s*[|+]\s*'
-	X "$indent<Type>"
-	foreach ($part in $parts) {
-		Emit-SingleType -typeStr $part.Trim() -indent "$indent`t"
-	}
-	X "$indent</Type>"
-}
-
-function Emit-SingleType {
-	param([string]$typeStr, [string]$indent)
-
-	$typeStr = Resolve-TypeStr $typeStr
-
-	if ($typeStr -eq "boolean") {
-		X "$indent<v8:Type>xs:boolean</v8:Type>"; return
-	}
-	if ($typeStr -match '^string(\((\d+)\))?$') {
-		$len = if ($Matches[2]) { $Matches[2] } else { "0" }
-		X "$indent<v8:Type>xs:string</v8:Type>"
-		X "$indent<v8:StringQualifiers>"
-		X "$indent`t<v8:Length>$len</v8:Length>"
-		X "$indent`t<v8:AllowedLength>Variable</v8:AllowedLength>"
-		X "$indent</v8:StringQualifiers>"; return
-	}
-	if ($typeStr -match '^decimal\((\d+),(\d+)(,nonneg)?\)$') {
-		$digits = $Matches[1]; $fraction = $Matches[2]
-		$sign = if ($Matches[3]) { "Nonnegative" } else { "Any" }
-		X "$indent<v8:Type>xs:decimal</v8:Type>"
-		X "$indent<v8:NumberQualifiers>"
-		X "$indent`t<v8:Digits>$digits</v8:Digits>"
-		X "$indent`t<v8:FractionDigits>$fraction</v8:FractionDigits>"
-		X "$indent`t<v8:AllowedSign>$sign</v8:AllowedSign>"
-		X "$indent</v8:NumberQualifiers>"; return
-	}
-	if ($typeStr -match '^(date|dateTime|time)$') {
-		$fractions = switch ($typeStr) { "date" { "Date" } "dateTime" { "DateTime" } "time" { "Time" } }
-		X "$indent<v8:Type>xs:dateTime</v8:Type>"
-		X "$indent<v8:DateQualifiers>"
-		X "$indent`t<v8:DateFractions>$fractions</v8:DateFractions>"
-		X "$indent</v8:DateQualifiers>"; return
-	}
-	$v8Types = @{
-		"ValueTable" = "v8:ValueTable"; "ValueTree" = "v8:ValueTree"; "ValueList" = "v8:ValueListType"
-		"TypeDescription" = "v8:TypeDescription"; "Universal" = "v8:Universal"
-		"FixedArray" = "v8:FixedArray"; "FixedStructure" = "v8:FixedStructure"
-	}
-	if ($v8Types.ContainsKey($typeStr)) { X "$indent<v8:Type>$($v8Types[$typeStr])</v8:Type>"; return }
-	$uiTypes = @{ "FormattedString" = "v8ui:FormattedString"; "Picture" = "v8ui:Picture"; "Color" = "v8ui:Color"; "Font" = "v8ui:Font" }
-	if ($uiTypes.ContainsKey($typeStr)) { X "$indent<v8:Type>$($uiTypes[$typeStr])</v8:Type>"; return }
-	if ($typeStr -eq "DynamicList") { X "$indent<v8:Type>cfg:DynamicList</v8:Type>"; return }
-	if ($typeStr -match '^DataComposition') {
-		$dcsMap = @{ "DataCompositionSettings" = "dcsset:DataCompositionSettings"; "DataCompositionSchema" = "dcssch:DataCompositionSchema"; "DataCompositionComparisonType" = "dcscor:DataCompositionComparisonType" }
-		if ($dcsMap.ContainsKey($typeStr)) { X "$indent<v8:Type>$($dcsMap[$typeStr])</v8:Type>"; return }
-	}
-	if ($typeStr -match '^(CatalogRef|CatalogObject|DocumentRef|DocumentObject|EnumRef|ChartOfAccountsRef|ChartOfCharacteristicTypesRef|ChartOfCalculationTypesRef|ExchangePlanRef|BusinessProcessRef|TaskRef|InformationRegisterRecordSet|AccumulationRegisterRecordSet|DataProcessorObject)\.') {
-		X "$indent<v8:Type>cfg:$typeStr</v8:Type>"; return
-	}
-	if ($typeStr.Contains('.')) { X "$indent<v8:Type>cfg:$typeStr</v8:Type>" }
-	else { X "$indent<v8:Type>$typeStr</v8:Type>" }
-}
-
 function Test-IsDynamicListType {
 	param([string]$typeStr)
 	return ($typeStr -eq "DynamicList" -or $typeStr -eq "cfg:DynamicList")
@@ -442,61 +344,6 @@ function Test-DynamicListSource {
 	return ($main -ne "" -or $query -ne "")
 }
 
-function Emit-DynamicListSettings {
-	param($settings, [string]$indent)
-	X "$indent<Settings xsi:type=`"DynamicList`">"
-	$si = "$indent`t"
-	$hasQuery = $settings.query -and "$($settings.query)".Trim()
-	$hasMQKey = $false
-	if ($settings -is [System.Collections.IDictionary]) {
-		$hasMQKey = $settings.Contains("manualQuery") -and ($null -ne $settings.manualQuery)
-	} elseif ($settings.PSObject -and $settings.PSObject.Properties["manualQuery"]) {
-		$hasMQKey = $null -ne $settings.manualQuery
-	}
-	$mq = if ($hasMQKey) { if ($settings.manualQuery) { "true" } else { "false" } } elseif ($hasQuery) { "true" } else { "false" }
-	X "$si<ManualQuery>$mq</ManualQuery>"
-	$ddr = if ($settings.dynamicDataRead -eq $false) { "false" } else { "true" }
-	X "$si<DynamicDataRead>$ddr</DynamicDataRead>"
-	if ($hasQuery) {
-		X "$si<QueryText>$(Esc-Xml "$($settings.query)")</QueryText>"
-	}
-	$main = "$($settings.mainTable)".Trim()
-	if ($main -ne "") {
-		X "$si<MainTable>$(Esc-Xml $main)</MainTable>"
-	}
-	X "$indent</Settings>"
-}
-
-# --- Event handler name generator ---
-
-$script:eventSuffixMap = @{
-	"OnChange" = "ПриИзменении"; "StartChoice" = "НачалоВыбора"; "ChoiceProcessing" = "ОбработкаВыбора"
-	"AutoComplete" = "АвтоПодбор"; "Clearing" = "Очистка"; "Opening" = "Открытие"; "Click" = "Нажатие"
-	"OnActivateRow" = "ПриАктивизацииСтроки"; "BeforeAddRow" = "ПередНачаломДобавления"
-	"BeforeDeleteRow" = "ПередУдалением"; "BeforeRowChange" = "ПередНачаломИзменения"
-	"OnStartEdit" = "ПриНачалеРедактирования"; "OnEndEdit" = "ПриОкончанииРедактирования"
-	"Selection" = "ВыборСтроки"; "OnCurrentPageChange" = "ПриСменеСтраницы"
-	"TextEditEnd" = "ОкончаниеВводаТекста"; "URLProcessing" = "ОбработкаНавигационнойСсылки"
-	"DragStart" = "НачалоПеретаскивания"; "Drag" = "Перетаскивание"
-	"DragCheck" = "ПроверкаПеретаскивания"; "Drop" = "Помещение"; "AfterDeleteRow" = "ПослеУдаления"
-	"Tuning" = "Регулирование"; "StartListChoice" = "НачалоВыбораИзСписка"
-}
-
-function Get-HandlerName {
-	param([string]$elementName, [string]$eventName)
-	$suffix = $script:eventSuffixMap[$eventName]
-	if ($suffix) { return "$elementName$suffix" }
-	return "$elementName$eventName"
-}
-
-# --- Element helpers ---
-
-function Get-ElementName {
-	param($el, [string]$typeKey)
-	if ($el.name) { return "$($el.name)" }
-	return "$($el.$typeKey)"
-}
-
 # Уникальность имён внутри JSON-определения (1С: своя коллекция — свой неймспейс).
 function Assert-EditUnique {
 	param([string]$name, [hashtable]$seen, [string]$ctx)
@@ -507,435 +354,9 @@ function Assert-EditUnique {
 	$seen[$name] = $true
 }
 
-$script:knownEvents = @{
-	"input"     = @("OnChange","StartChoice","StartListChoice","ChoiceProcessing","AutoComplete","TextEditEnd","Clearing","Creating","EditTextChange","Tuning","Opening")
-	"check"     = @("OnChange")
-	"label"     = @("Click","URLProcessing")
-	"labelField"= @("OnChange","StartChoice","ChoiceProcessing","Click","URLProcessing","Clearing")
-	"table"     = @("Selection","BeforeAddRow","AfterDeleteRow","BeforeDeleteRow","OnActivateRow","OnEditEnd","OnStartEdit","BeforeRowChange","BeforeEditEnd","ValueChoice","OnActivateCell","OnActivateField","Drag","DragStart","DragCheck","DragEnd","OnGetDataAtServer","BeforeLoadUserSettingsAtServer","OnUpdateUserSettingSetAtServer","OnChange")
-	"pages"     = @("OnCurrentPageChange")
-	"page"      = @("OnCurrentPageChange")
-	"button"    = @("Click")
-	"picField"  = @("OnChange","StartChoice","ChoiceProcessing","Click","Clearing")
-	"calendar"  = @("OnChange","OnActivate")
-	"picture"   = @("Click")
-	"cmdBar"    = @()
-	"popup"     = @()
-	"group"     = @()
-}
+# === 6. Find elements by name ===
 
-function Emit-Events {
-	param($el, [string]$elementName, [string]$indent, [string]$typeKey)
-	if (-not $el.on) { return }
-
-	# Validate event names
-	if ($typeKey -and $script:knownEvents.ContainsKey($typeKey)) {
-		$allowed = $script:knownEvents[$typeKey]
-		foreach ($evt in $el.on) {
-			$evtStr = if ($evt -is [string]) { "$evt" } else { "$($evt.event)" }
-			if ($allowed.Count -gt 0 -and $allowed -notcontains $evtStr) {
-				Write-Host "[WARN] Unknown event '$evtStr' for $typeKey '$elementName'. Known: $($allowed -join ', ')"
-			}
-		}
-	}
-
-	X "$indent<Events>"
-	foreach ($evt in $el.on) {
-		# Support both string ("OnChange") and object ({ "event": "OnChange", "callType": "After" })
-		if ($evt -is [string] -or -not $evt.event) {
-			$evtName = "$evt"
-			$handler = if ($el.handlers -and $el.handlers.$evtName) { "$($el.handlers.$evtName)" }
-			else { Get-HandlerName -elementName $elementName -eventName $evtName }
-			X "$indent`t<Event name=`"$evtName`">$handler</Event>"
-		} else {
-			$evtName = "$($evt.event)"
-			$handler = if ($evt.handler) { "$($evt.handler)" }
-			elseif ($el.handlers -and $el.handlers.$evtName) { "$($el.handlers.$evtName)" }
-			else { Get-HandlerName -elementName $elementName -eventName $evtName }
-			$callTypeAttr = if ($evt.callType) { " callType=`"$($evt.callType)`"" } else { "" }
-			X "$indent`t<Event name=`"$evtName`"$callTypeAttr>$handler</Event>"
-		}
-	}
-	X "$indent</Events>"
-}
-
-function Emit-Companion {
-	param([string]$tag, [string]$name, [string]$indent)
-	$id = New-Id
-	X "$indent<$tag name=`"$name`" id=`"$id`"/>"
-}
-
-function Emit-CommonFlags {
-	param($el, [string]$indent)
-	if ($el.visible -eq $false -or $el.hidden -eq $true) { X "$indent<Visible>false</Visible>" }
-	if ($el.enabled -eq $false -or $el.disabled -eq $true) { X "$indent<Enabled>false</Enabled>" }
-	if ($el.readOnly -eq $true) { X "$indent<ReadOnly>true</ReadOnly>" }
-}
-
-function Emit-Title {
-	param($el, [string]$name, [string]$indent)
-	if ($el.title) { Emit-MLText -tag "Title" -text "$($el.title)" -indent $indent }
-}
-
-# --- Element emitters ---
-
-function Emit-Group {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<UsualGroup name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	Emit-Title -el $el -name $name -indent $inner
-	$groupVal = "$($el.group)"
-	$orientation = switch ($groupVal) {
-		"horizontal" { "Horizontal" } "vertical" { "Vertical" }
-		"alwaysHorizontal" { "AlwaysHorizontal" } "alwaysVertical" { "AlwaysVertical" }
-		default { $null }
-	}
-	if ($orientation) { X "$inner<Group>$orientation</Group>" }
-	if ($groupVal -eq "collapsible") { X "$inner<Group>Vertical</Group>"; X "$inner<Behavior>Collapsible</Behavior>" }
-	if ($el.representation) {
-		$repr = switch ("$($el.representation)") { "none" { "None" } "normal" { "NormalSeparation" } "weak" { "WeakSeparation" } "strong" { "StrongSeparation" } default { "$($el.representation)" } }
-		X "$inner<Representation>$repr</Representation>"
-	}
-	if ($el.showTitle -eq $false) { X "$inner<ShowTitle>false</ShowTitle>" }
-	if ($el.united -eq $false) { X "$inner<United>false</United>" }
-	Emit-CommonFlags -el $el -indent $inner
-	Emit-Companion -tag "ExtendedTooltip" -name "${name}РасширеннаяПодсказка" -indent $inner
-	if ($el.children -and $el.children.Count -gt 0) {
-		X "$inner<ChildItems>"
-		foreach ($child in $el.children) { Emit-Element -el $child -indent "$inner`t" }
-		X "$inner</ChildItems>"
-	}
-	X "$indent</UsualGroup>"
-}
-
-function Emit-Input {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<InputField name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	if ($el.path) { X "$inner<DataPath>$($el.path)</DataPath>" }
-	Emit-Title -el $el -name $name -indent $inner
-	Emit-CommonFlags -el $el -indent $inner
-	if ($el.titleLocation) {
-		$loc = switch ("$($el.titleLocation)") { "none" { "None" } "left" { "Left" } "right" { "Right" } "top" { "Top" } "bottom" { "Bottom" } default { "$($el.titleLocation)" } }
-		X "$inner<TitleLocation>$loc</TitleLocation>"
-	}
-	if ($el.multiLine -eq $true) { X "$inner<MultiLine>true</MultiLine>" }
-	if ($el.passwordMode -eq $true) { X "$inner<PasswordMode>true</PasswordMode>" }
-	if ($el.choiceButton -eq $false) { X "$inner<ChoiceButton>false</ChoiceButton>" }
-	if ($el.clearButton -eq $true) { X "$inner<ClearButton>true</ClearButton>" }
-	if ($el.spinButton -eq $true) { X "$inner<SpinButton>true</SpinButton>" }
-	if ($el.dropListButton -eq $true) { X "$inner<DropListButton>true</DropListButton>" }
-	if ($el.markIncomplete -eq $true) { X "$inner<AutoMarkIncomplete>true</AutoMarkIncomplete>" }
-	if ($el.skipOnInput -eq $true) { X "$inner<SkipOnInput>true</SkipOnInput>" }
-	if ($el.autoMaxWidth -eq $false) { X "$inner<AutoMaxWidth>false</AutoMaxWidth>" }
-	if ($el.autoMaxHeight -eq $false) { X "$inner<AutoMaxHeight>false</AutoMaxHeight>" }
-	if ($el.width) { X "$inner<Width>$($el.width)</Width>" }
-	if ($el.height) { X "$inner<Height>$($el.height)</Height>" }
-	if ($el.horizontalStretch -eq $true) { X "$inner<HorizontalStretch>true</HorizontalStretch>" }
-	if ($el.verticalStretch -eq $true) { X "$inner<VerticalStretch>true</VerticalStretch>" }
-	if ($el.inputHint) { Emit-MLText -tag "InputHint" -text "$($el.inputHint)" -indent $inner }
-	Emit-Companion -tag "ContextMenu" -name "${name}КонтекстноеМеню" -indent $inner
-	Emit-Companion -tag "ExtendedTooltip" -name "${name}РасширеннаяПодсказка" -indent $inner
-	Emit-Events -el $el -elementName $name -indent $inner -typeKey "input"
-	X "$indent</InputField>"
-}
-
-function Emit-Check {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<CheckBoxField name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	if ($el.path) { X "$inner<DataPath>$($el.path)</DataPath>" }
-	Emit-Title -el $el -name $name -indent $inner
-	Emit-CommonFlags -el $el -indent $inner
-	if ($el.titleLocation) { X "$inner<TitleLocation>$($el.titleLocation)</TitleLocation>" }
-	Emit-Companion -tag "ContextMenu" -name "${name}КонтекстноеМеню" -indent $inner
-	Emit-Companion -tag "ExtendedTooltip" -name "${name}РасширеннаяПодсказка" -indent $inner
-	Emit-Events -el $el -elementName $name -indent $inner -typeKey "check"
-	X "$indent</CheckBoxField>"
-}
-
-function Emit-Label {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<LabelDecoration name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	if ($el.title) {
-		$formatted = if ($el.hyperlink -eq $true) { "true" } else { "false" }
-		X "$inner<Title formatted=`"$formatted`">"
-		X "$inner`t<v8:item>"
-		X "$inner`t`t<v8:lang>ru</v8:lang>"
-		X "$inner`t`t<v8:content>$(Esc-Xml "$($el.title)")</v8:content>"
-		X "$inner`t</v8:item>"
-		X "$inner</Title>"
-	}
-	Emit-CommonFlags -el $el -indent $inner
-	if ($el.hyperlink -eq $true) { X "$inner<Hyperlink>true</Hyperlink>" }
-	if ($el.autoMaxWidth -eq $false) { X "$inner<AutoMaxWidth>false</AutoMaxWidth>" }
-	if ($el.autoMaxHeight -eq $false) { X "$inner<AutoMaxHeight>false</AutoMaxHeight>" }
-	if ($el.width) { X "$inner<Width>$($el.width)</Width>" }
-	if ($el.height) { X "$inner<Height>$($el.height)</Height>" }
-	Emit-Companion -tag "ContextMenu" -name "${name}КонтекстноеМеню" -indent $inner
-	Emit-Companion -tag "ExtendedTooltip" -name "${name}РасширеннаяПодсказка" -indent $inner
-	Emit-Events -el $el -elementName $name -indent $inner -typeKey "label"
-	X "$indent</LabelDecoration>"
-}
-
-function Emit-LabelField {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<LabelField name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	if ($el.path) { X "$inner<DataPath>$($el.path)</DataPath>" }
-	Emit-Title -el $el -name $name -indent $inner
-	Emit-CommonFlags -el $el -indent $inner
-	if ($el.hyperlink -eq $true) { X "$inner<Hyperlink>true</Hyperlink>" }
-	Emit-Companion -tag "ContextMenu" -name "${name}КонтекстноеМеню" -indent $inner
-	Emit-Companion -tag "ExtendedTooltip" -name "${name}РасширеннаяПодсказка" -indent $inner
-	Emit-Events -el $el -elementName $name -indent $inner -typeKey "labelField"
-	X "$indent</LabelField>"
-}
-
-function Emit-Table {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<Table name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	if ($el.path) { X "$inner<DataPath>$($el.path)</DataPath>" }
-	Emit-Title -el $el -name $name -indent $inner
-	Emit-CommonFlags -el $el -indent $inner
-	if ($el.representation) { X "$inner<Representation>$($el.representation)</Representation>" }
-	if ($el.changeRowSet -eq $true) { X "$inner<ChangeRowSet>true</ChangeRowSet>" }
-	if ($el.changeRowOrder -eq $true) { X "$inner<ChangeRowOrder>true</ChangeRowOrder>" }
-	if ($el.height) { X "$inner<HeightInTableRows>$($el.height)</HeightInTableRows>" }
-	if ($el.header -eq $false) { X "$inner<Header>false</Header>" }
-	if ($el.footer -eq $true) { X "$inner<Footer>true</Footer>" }
-	if ($el.commandBarLocation) { X "$inner<CommandBarLocation>$($el.commandBarLocation)</CommandBarLocation>" }
-	if ($el.searchStringLocation) { X "$inner<SearchStringLocation>$($el.searchStringLocation)</SearchStringLocation>" }
-	Emit-Companion -tag "ContextMenu" -name "${name}КонтекстноеМеню" -indent $inner
-	Emit-Companion -tag "AutoCommandBar" -name "${name}КоманднаяПанель" -indent $inner
-	Emit-Companion -tag "SearchStringAddition" -name "${name}СтрокаПоиска" -indent $inner
-	Emit-Companion -tag "ViewStatusAddition" -name "${name}СостояниеПросмотра" -indent $inner
-	Emit-Companion -tag "SearchControlAddition" -name "${name}УправлениеПоиском" -indent $inner
-	if ($el.columns -and $el.columns.Count -gt 0) {
-		X "$inner<ChildItems>"
-		foreach ($col in $el.columns) { Emit-Element -el $col -indent "$inner`t" }
-		X "$inner</ChildItems>"
-	}
-	Emit-Events -el $el -elementName $name -indent $inner -typeKey "table"
-	X "$indent</Table>"
-}
-
-function Emit-Pages {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<Pages name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	if ($el.pagesRepresentation) { X "$inner<PagesRepresentation>$($el.pagesRepresentation)</PagesRepresentation>" }
-	Emit-CommonFlags -el $el -indent $inner
-	Emit-Companion -tag "ExtendedTooltip" -name "${name}РасширеннаяПодсказка" -indent $inner
-	Emit-Events -el $el -elementName $name -indent $inner -typeKey "pages"
-	if ($el.children -and $el.children.Count -gt 0) {
-		X "$inner<ChildItems>"
-		foreach ($child in $el.children) { Emit-Element -el $child -indent "$inner`t" }
-		X "$inner</ChildItems>"
-	}
-	X "$indent</Pages>"
-}
-
-function Emit-Page {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<Page name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	Emit-Title -el $el -name $name -indent $inner
-	Emit-CommonFlags -el $el -indent $inner
-	if ($el.group) {
-		$orientation = switch ("$($el.group)") { "horizontal" { "Horizontal" } "vertical" { "Vertical" } "alwaysHorizontal" { "AlwaysHorizontal" } "alwaysVertical" { "AlwaysVertical" } default { $null } }
-		if ($orientation) { X "$inner<Group>$orientation</Group>" }
-	}
-	Emit-Companion -tag "ExtendedTooltip" -name "${name}РасширеннаяПодсказка" -indent $inner
-	if ($el.children -and $el.children.Count -gt 0) {
-		X "$inner<ChildItems>"
-		foreach ($child in $el.children) { Emit-Element -el $child -indent "$inner`t" }
-		X "$inner</ChildItems>"
-	}
-	X "$indent</Page>"
-}
-
-function Emit-Button {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<Button name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	# Child order is the platform's (Type, Visible, Representation, DefaultButton,
-	# Enabled, CommandName, Picture, Title, LocationInCommandBar): the loader reads
-	# Form.xml as a sequence, and CommandName before Representation was refused
-	# with an XDTO exception.
-	if ($el.type) {
-		$btnType = switch ("$($el.type)") { "usual" { "UsualButton" } "hyperlink" { "Hyperlink" } "commandBar" { "CommandBarButton" } default { "$($el.type)" } }
-		X "$inner<Type>$btnType</Type>"
-	}
-	if ($el.visible -eq $false -or $el.hidden -eq $true) { X "$inner<Visible>false</Visible>" }
-	if ($el.representation) {
-		# A button spells picture-and-text PictureAndText; TextPicture is the command's spelling.
-		$btnRepr = if ("$($el.representation)" -eq 'TextPicture') { 'PictureAndText' } else { "$($el.representation)" }
-		X "$inner<Representation>$btnRepr</Representation>"
-	}
-	if ($el.defaultButton -eq $true) { X "$inner<DefaultButton>true</DefaultButton>" }
-	if ($el.enabled -eq $false -or $el.disabled -eq $true) { X "$inner<Enabled>false</Enabled>" }
-	if ($el.readOnly -eq $true) { X "$inner<ReadOnly>true</ReadOnly>" }
-	if ($el.command) { X "$inner<CommandName>Form.Command.$($el.command)</CommandName>" }
-	if ($el.stdCommand) {
-		$sc = "$($el.stdCommand)"
-		if ($sc -match '^(.+)\.(.+)$') {
-			X "$inner<CommandName>Form.Item.$($Matches[1]).StandardCommand.$($Matches[2])</CommandName>"
-		} else {
-			X "$inner<CommandName>Form.StandardCommand.$sc</CommandName>"
-		}
-	}
-	if ($el.picture) {
-		X "$inner<Picture>"
-		X "$inner`t<xr:Ref>$($el.picture)</xr:Ref>"
-		X "$inner`t<xr:LoadTransparent>true</xr:LoadTransparent>"
-		X "$inner</Picture>"
-	}
-	Emit-Title -el $el -name $name -indent $inner
-	if ($el.locationInCommandBar) { X "$inner<LocationInCommandBar>$($el.locationInCommandBar)</LocationInCommandBar>" }
-	Emit-Companion -tag "ExtendedTooltip" -name "${name}РасширеннаяПодсказка" -indent $inner
-	Emit-Events -el $el -elementName $name -indent $inner -typeKey "button"
-	X "$indent</Button>"
-}
-
-function Emit-PictureDecoration {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<PictureDecoration name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	Emit-Title -el $el -name $name -indent $inner
-	Emit-CommonFlags -el $el -indent $inner
-	if ($el.picture -or $el.src) {
-		$ref = if ($el.src) { "$($el.src)" } else { "$($el.picture)" }
-		X "$inner<Picture>"; X "$inner`t<xr:Ref>$ref</xr:Ref>"; X "$inner`t<xr:LoadTransparent>true</xr:LoadTransparent>"; X "$inner</Picture>"
-	}
-	if ($el.hyperlink -eq $true) { X "$inner<Hyperlink>true</Hyperlink>" }
-	if ($el.width) { X "$inner<Width>$($el.width)</Width>" }
-	if ($el.height) { X "$inner<Height>$($el.height)</Height>" }
-	Emit-Companion -tag "ContextMenu" -name "${name}КонтекстноеМеню" -indent $inner
-	Emit-Companion -tag "ExtendedTooltip" -name "${name}РасширеннаяПодсказка" -indent $inner
-	Emit-Events -el $el -elementName $name -indent $inner -typeKey "picture"
-	X "$indent</PictureDecoration>"
-}
-
-function Emit-PictureField {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<PictureField name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	if ($el.path) { X "$inner<DataPath>$($el.path)</DataPath>" }
-	Emit-Title -el $el -name $name -indent $inner
-	Emit-CommonFlags -el $el -indent $inner
-	if ($el.width) { X "$inner<Width>$($el.width)</Width>" }
-	if ($el.height) { X "$inner<Height>$($el.height)</Height>" }
-	Emit-Companion -tag "ContextMenu" -name "${name}КонтекстноеМеню" -indent $inner
-	Emit-Companion -tag "ExtendedTooltip" -name "${name}РасширеннаяПодсказка" -indent $inner
-	Emit-Events -el $el -elementName $name -indent $inner -typeKey "picField"
-	X "$indent</PictureField>"
-}
-
-function Emit-Calendar {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<CalendarField name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	if ($el.path) { X "$inner<DataPath>$($el.path)</DataPath>" }
-	Emit-Title -el $el -name $name -indent $inner
-	Emit-CommonFlags -el $el -indent $inner
-	Emit-Companion -tag "ContextMenu" -name "${name}КонтекстноеМеню" -indent $inner
-	Emit-Companion -tag "ExtendedTooltip" -name "${name}РасширеннаяПодсказка" -indent $inner
-	Emit-Events -el $el -elementName $name -indent $inner -typeKey "calendar"
-	X "$indent</CalendarField>"
-}
-
-function Emit-CommandBarEl {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<CommandBar name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	if ($el.autofill -eq $true) { X "$inner<Autofill>true</Autofill>" }
-	Emit-CommonFlags -el $el -indent $inner
-	if ($el.children -and $el.children.Count -gt 0) {
-		X "$inner<ChildItems>"
-		foreach ($child in $el.children) { Emit-Element -el $child -indent "$inner`t" }
-		X "$inner</ChildItems>"
-	}
-	X "$indent</CommandBar>"
-}
-
-function Emit-Popup {
-	param($el, [string]$name, [int]$id, [string]$indent)
-	X "$indent<Popup name=`"$name`" id=`"$id`">"
-	$inner = "$indent`t"
-	Emit-Title -el $el -name $name -indent $inner
-	Emit-CommonFlags -el $el -indent $inner
-	if ($el.picture) {
-		X "$inner<Picture>"; X "$inner`t<xr:Ref>$($el.picture)</xr:Ref>"; X "$inner`t<xr:LoadTransparent>true</xr:LoadTransparent>"; X "$inner</Picture>"
-	}
-	if ($el.representation) { X "$inner<Representation>$($el.representation)</Representation>" }
-	if ($el.children -and $el.children.Count -gt 0) {
-		X "$inner<ChildItems>"
-		foreach ($child in $el.children) { Emit-Element -el $child -indent "$inner`t" }
-		X "$inner</ChildItems>"
-	}
-	X "$indent</Popup>"
-}
-
-# --- Element dispatcher ---
-
-function Emit-Element {
-	param($el, [string]$indent)
-
-	$typeKey = $null
-	foreach ($key in @("group","input","check","label","labelField","table","pages","page","button","picture","picField","calendar","cmdBar","popup")) {
-		if ($el.$key -ne $null) { $typeKey = $key; break }
-	}
-	if (-not $typeKey) { Write-Warning "Unknown element type, skipping"; return }
-
-	# Validate known keys — warn about typos
-	$knownKeys = @{
-		"group"=1;"input"=1;"check"=1;"label"=1;"labelField"=1;"table"=1;"pages"=1;"page"=1
-		"button"=1;"picture"=1;"picField"=1;"calendar"=1;"cmdBar"=1;"popup"=1
-		"name"=1;"path"=1;"title"=1
-		"visible"=1;"hidden"=1;"enabled"=1;"disabled"=1;"readOnly"=1
-		"on"=1;"handlers"=1
-		"titleLocation"=1;"representation"=1;"width"=1;"height"=1
-		"horizontalStretch"=1;"verticalStretch"=1;"autoMaxWidth"=1;"autoMaxHeight"=1
-		"multiLine"=1;"passwordMode"=1;"choiceButton"=1;"clearButton"=1
-		"spinButton"=1;"dropListButton"=1;"markIncomplete"=1;"skipOnInput"=1;"inputHint"=1
-		"hyperlink"=1;"showTitle"=1;"united"=1;"children"=1;"columns"=1
-		"changeRowSet"=1;"changeRowOrder"=1;"header"=1;"footer"=1
-		"commandBarLocation"=1;"searchStringLocation"=1;"pagesRepresentation"=1
-		"type"=1;"command"=1;"stdCommand"=1;"defaultButton"=1;"locationInCommandBar"=1
-		"src"=1;"autofill"=1
-	}
-	foreach ($p in $el.PSObject.Properties) {
-		if (-not $knownKeys.ContainsKey($p.Name)) {
-			Write-Warning "Element '$($el.$typeKey)': unknown key '$($p.Name)' — ignored."
-		}
-	}
-
-	$name = Get-ElementName -el $el -typeKey $typeKey
-	$id = New-Id
-
-	switch ($typeKey) {
-		"group"     { Emit-Group -el $el -name $name -id $id -indent $indent }
-		"input"     { Emit-Input -el $el -name $name -id $id -indent $indent }
-		"check"     { Emit-Check -el $el -name $name -id $id -indent $indent }
-		"label"     { Emit-Label -el $el -name $name -id $id -indent $indent }
-		"labelField" { Emit-LabelField -el $el -name $name -id $id -indent $indent }
-		"table"     { Emit-Table -el $el -name $name -id $id -indent $indent }
-		"pages"     { Emit-Pages -el $el -name $name -id $id -indent $indent }
-		"page"      { Emit-Page -el $el -name $name -id $id -indent $indent }
-		"button"    { Emit-Button -el $el -name $name -id $id -indent $indent }
-		"picture"   { Emit-PictureDecoration -el $el -name $name -id $id -indent $indent }
-		"picField"  { Emit-PictureField -el $el -name $name -id $id -indent $indent }
-		"calendar"  { Emit-Calendar -el $el -name $name -id $id -indent $indent }
-		"cmdBar"    { Emit-CommandBarEl -el $el -name $name -id $id -indent $indent }
-		"popup"     { Emit-Popup -el $el -name $name -id $id -indent $indent }
-	}
-}
-
-# === 6. Find element by name recursively ===
-
+# Element tree only (ChildItems, recursively): the lookup of elementEvents.
 function Find-Element($startNode, [string]$targetName) {
 	foreach ($child in $startNode.ChildNodes) {
 		if ($child.NodeType -ne 'Element') { continue }
@@ -950,7 +371,41 @@ function Find-Element($startNode, [string]$targetName) {
 	return $null
 }
 
+# Every named node of the form's element tree: the form's own AutoCommandBar and
+# ChildItems with all descendants, companions (ExtendedTooltip, ContextMenu, a table's
+# AutoCommandBar, the table additions) included. <Event name=".."> is not an element.
+function Get-NamedNodes {
+	$list = New-Object System.Collections.ArrayList
+	foreach ($top in @($root.SelectNodes('f:AutoCommandBar | f:ChildItems', $nsMgr))) {
+		if ($top.GetAttribute("name")) { [void]$list.Add($top) }
+		foreach ($n in $top.SelectNodes('.//*[@name]')) {
+			if ($n.NamespaceURI -eq $formNs -and $n.LocalName -ne 'Event') { [void]$list.Add($n) }
+		}
+	}
+	return $list
+}
+
+function Find-Target([string]$targetName) {
+	foreach ($n in @(Get-NamedNodes)) {
+		if ($n.GetAttribute("name") -eq $targetName) { return $n }
+	}
+	return $null
+}
+
 # === 7. Detect indent level of a container's children ===
+
+# Indent of the line a node starts on (the whitespace before it); by depth when it has none.
+function Get-NodeIndent($node) {
+	$prev = $node.PreviousSibling
+	if ($prev -and ($prev.NodeType -eq 'Whitespace' -or $prev.NodeType -eq 'SignificantWhitespace')) {
+		$i = $prev.Value.LastIndexOf("`n")
+		if ($i -ge 0) { return $prev.Value.Substring($i + 1) }
+	}
+	$depth = 0
+	$current = $node.ParentNode
+	while ($current -and $current.NodeType -eq 'Element') { $depth++; $current = $current.ParentNode }
+	return "`t" * $depth
+}
 
 function Get-ChildIndent($container) {
 	foreach ($child in $container.ChildNodes) {
@@ -960,22 +415,49 @@ function Get-ChildIndent($container) {
 			if ($text -match '^\r?\n(\t+)') { return $Matches[1] }
 		}
 	}
-	# Fallback: count depth from root
-	$depth = 0
-	$current = $container
-	while ($current -and $current -ne $xmlDoc.DocumentElement) {
-		$depth++
-		$current = $current.ParentNode
+	# No children yet: one tab deeper than the container itself
+	return (Get-NodeIndent $container) + "`t"
+}
+
+# ChildItems of an element, created when absent. It is the last child of every element
+# that has one (after HorizontalAlign / Autofill of a command bar, after the companions
+# and events of the others), on its own lines whether the owner was a self-closing tag or not.
+function Ensure-ChildItems($owner) {
+	$ci = $owner.SelectSingleNode("f:ChildItems", $nsMgr)
+	if ($ci) { return $ci }
+	$ownerIndent = Get-NodeIndent $owner
+	$ci = $xmlDoc.CreateElement("ChildItems", $formNs)
+	$last = $owner.LastChild
+	if ($last -and ($last.NodeType -eq 'Whitespace' -or $last.NodeType -eq 'SignificantWhitespace')) {
+		$owner.InsertBefore($xmlDoc.CreateWhitespace("`r`n$ownerIndent`t"), $last) | Out-Null
+		$owner.InsertBefore($ci, $last) | Out-Null
+	} else {
+		$owner.AppendChild($xmlDoc.CreateWhitespace("`r`n$ownerIndent`t")) | Out-Null
+		$owner.AppendChild($ci) | Out-Null
+		$owner.AppendChild($xmlDoc.CreateWhitespace("`r`n$ownerIndent")) | Out-Null
 	}
-	return "`t" * ($depth + 1)
+	return $ci
 }
 
 # === 8. Insert node into container ===
 
-function Insert-IntoContainer($container, $newNode, $afterName, $childIndent) {
+function Insert-IntoContainer($container, $newNode, $afterName, $childIndent, $beforeName = $null) {
 	$refNode = $null
+	$beforeAnchor = $false
 
-	if ($afterName) {
+	if ($beforeName) {
+		# Insert before the named element
+		foreach ($child in $container.ChildNodes) {
+			if ($child.NodeType -eq 'Element' -and $child.GetAttribute("name") -eq $beforeName) {
+				$refNode = $child
+				$beforeAnchor = $true
+				break
+			}
+		}
+		if (-not $refNode) {
+			Write-Host "[WARN] before='$beforeName' not found in target container, appending at end"
+		}
+	} elseif ($afterName) {
 		# Find the after-element, then insert after it
 		$afterElem = $null
 		foreach ($child in $container.ChildNodes) {
@@ -1000,7 +482,11 @@ function Insert-IntoContainer($container, $newNode, $afterName, $childIndent) {
 	}
 
 	$ws = $xmlDoc.CreateWhitespace("`r`n$childIndent")
-	if ($refNode) {
+	if ($refNode -and $beforeAnchor) {
+		# The anchor keeps the whitespace in front of it: node, line break, anchor
+		$container.InsertBefore($newNode, $refNode) | Out-Null
+		$container.InsertBefore($ws, $refNode) | Out-Null
+	} elseif ($refNode) {
 		$container.InsertBefore($ws, $refNode) | Out-Null
 		$container.InsertBefore($newNode, $refNode) | Out-Null
 	} else {
@@ -1034,229 +520,421 @@ function Import-ElementNodes($fragDoc) {
 	return $nodes
 }
 
-# === 10. Add elements ===
+# --- 9b. Compile bridge: elements and attributes are written by form-compile ---
+# A second copy of the emitters drifted from the compiler (textEdit, maxWidth,
+# choiceParameters, save, AdditionSource of the table additions, ... were dropped
+# with «unknown key ... ignored»). The new items go into a temporary DSL, form-compile
+# compiles it into a temporary Form.xml (outside Forms\<Name>\Ext, so no parent object
+# is touched), and the compiled nodes are renumbered, re-indented and imported below.
+# Commands stay with the emitters above: the compiler writes their children in an
+# order the platform refused (CHANGELOG 2026-10-01).
+
+$script:compileScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../1c-form-compile/scripts/form-compile.ps1'))
+
+function Invoke-FormCompileFragment($dsl) {
+	if (-not (Test-Path -LiteralPath $script:compileScript)) {
+		Write-Host "[ERROR] form-compile not found: $script:compileScript"
+		exit 1
+	}
+	$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("form-edit-" + [guid]::NewGuid().ToString('N'))
+	try {
+		New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+		$dslPath = Join-Path $tmp 'fragment.json'
+		$outPath = Join-Path $tmp 'Form.xml'
+		[System.IO.File]::WriteAllText($dslPath, ($dsl | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding($true)))
+
+		# form-compile ends with exit: a child process of the same PowerShell edition.
+		$psi = New-Object System.Diagnostics.ProcessStartInfo
+		$psi.FileName = (Get-Process -Id $PID).Path
+		# -Command, not -File: a refusal of the compiler (Write-Error under Stop) arrives as its plain
+		# message instead of the host's decorated error record.
+		$q = { param([string]$s) "'" + $s.Replace("'", "''") + "'" }
+		$cmd = "try { & " + (& $q $script:compileScript) + " -JsonPath " + (& $q $dslPath) + " -OutputPath " + (& $q $outPath) + "; exit `$LASTEXITCODE } catch { [Console]::Error.WriteLine(`$_.Exception.Message); exit 1 }"
+		$psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -Command "' + $cmd + '"'
+		$psi.UseShellExecute = $false
+		$psi.CreateNoWindow = $true
+		$psi.RedirectStandardOutput = $true
+		$psi.RedirectStandardError = $true
+		$psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+		$psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+		$proc = [System.Diagnostics.Process]::Start($psi)
+		$errTask = $proc.StandardError.ReadToEndAsync()
+		$outText = $proc.StandardOutput.ReadToEnd()
+		$proc.WaitForExit()
+		$errText = $errTask.Result
+		$lines = @((($outText + "`n" + $errText) -split "\r?\n") | Where-Object { $_.Trim() -ne '' })
+
+		if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $outPath)) {
+			foreach ($l in $lines) {
+				if ($l -match 'Configuration\.xml not found above') { continue }
+				Write-Host $l
+			}
+			Write-Host "[ERROR] form-compile refused the definition — nothing was written"
+			exit 1
+		}
+
+		# The compiler's warnings (the host localizes the «WARNING:» prefix) replace form-edit's own
+		# «unknown key» ones; its summary and the note about the temporary path do not.
+		foreach ($l in $lines) {
+			if ($l -match 'Configuration\.xml not found above') { continue }
+			if ($l -match '^\[OK\] Compiled' -or $l -match '^\s+(Elements\+IDs|Attributes|Commands|Parameters|Registered):') { continue }
+			Write-Host $l.Trim()
+		}
+
+		$compiled = New-Object System.Xml.XmlDocument
+		$compiled.PreserveWhitespace = $true
+		$compiled.Load($outPath)
+		return $compiled
+	} finally {
+		Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+	}
+}
+
+# Leading whitespace of every line inside an imported subtree: srcIndent -> dstIndent.
+# Only whitespace-only nodes are touched, so a multi-line text of an element stays as written.
+function Set-NodeIndent($node, [string]$srcIndent, [string]$dstIndent) {
+	if ($srcIndent -eq $dstIndent) { return }
+	$pattern = "(?<=\n)" + [regex]::Escape($srcIndent)
+	foreach ($child in @($node.ChildNodes)) {
+		if ($child.NodeType -eq 'Whitespace' -or $child.NodeType -eq 'SignificantWhitespace') {
+			if ($child.Value.IndexOf("`n") -ge 0) { $child.Value = [regex]::Replace($child.Value, $pattern, $dstIndent) }
+		} elseif ($child.NodeType -eq 'Element') {
+			Set-NodeIndent $child $srcIndent $dstIndent
+		}
+	}
+}
+
+# Fresh element ids, in document order, for the subtree (the form's own bar, id -1, never
+# occurs inside it). References inside Form.xml are by name, so nothing else changes.
+function Set-ElementIds($node) {
+	foreach ($n in @($node.SelectNodes('descendant-or-self::*[@id]'))) {
+		if ($n.GetAttribute("id") -eq "-1") { continue }
+		$n.SetAttribute("id", [string](New-ElemId))
+	}
+}
+
+# Prefixes the imported nodes use (as element or attribute names, and in xsi:type / type
+# texts such as cfg:CatalogObject.X) must be declared on the target's <Form>; a form that
+# lacks one gets the compiler's declaration there instead of a copy on every node.
+function Ensure-Namespaces($srcDoc, $nodes) {
+	$text = (@($nodes | ForEach-Object { $_.OuterXml }) -join "`n")
+	# get_Attributes(): a child element <Attributes> shadows the property in PowerShell's XML adapter
+	foreach ($a in $srcDoc.DocumentElement.get_Attributes()) {
+		if ($a.Prefix -ne 'xmlns') { continue }
+		$prefix = $a.LocalName
+		if ($text -notmatch ('(?<![\w.:/-])' + [regex]::Escape($prefix) + ':(?=[A-Za-z_])')) { continue }
+		$have = $root.GetNamespaceOfPrefix($prefix)
+		if ($have -and $have -ne $a.Value) {
+			Write-Host "[ERROR] Prefix '$prefix' is bound to '$have' in this form, the compiled items need '$($a.Value)'"
+			exit 1
+		}
+		if (-not $have) {
+			$decl = $xmlDoc.CreateAttribute("xmlns", $prefix, "http://www.w3.org/2000/xmlns/")
+			$decl.Value = $a.Value
+			$first = $null
+			$rootAttrs = $root.get_Attributes()
+			foreach ($ra in $rootAttrs) { if ($ra.Prefix -ne 'xmlns' -and $ra.Name -ne 'xmlns') { $first = $ra; break } }
+			if ($first) { $rootAttrs.InsertBefore($decl, $first) | Out-Null } else { $rootAttrs.Append($decl) | Out-Null }
+		}
+	}
+}
+
+function Get-TablePaths($els, [hashtable]$acc) {
+	foreach ($e in @($els)) {
+		if ($null -eq $e) { continue }
+		if ($null -ne $e.PSObject.Properties["table"] -and $null -ne $e.table -and $e.path) { $acc["$($e.path)"] = $true }
+		if ($e.PSObject.Properties["children"] -and $e.children) { Get-TablePaths $e.children $acc }
+	}
+}
+
+# === 10. Add elements and attributes ===
 
 $addedElems = @()
+$addedAttrs = @()
 $companionCount = 0
 
-if ($def.elements -and $def.elements.Count -gt 0) {
-	# Resolve target container
-	$targetCI = $null
+$hasElems = [bool]($def.elements -and $def.elements.Count -gt 0)
+$hasAttrs = [bool]($def.attributes -and $def.attributes.Count -gt 0)
+
+if ($hasElems -or $hasAttrs) {
 	$intoName = if ($def.into) { "$($def.into)" } else { $null }
 	$afterName = if ($def.after) { "$($def.after)" } else { $null }
-
-	if ($intoName) {
-		$targetGroup = Find-Element $rootCI $intoName
-		if (-not $targetGroup) {
-			Write-Host "[ERROR] Target group '$intoName' not found"
-			exit 1
-		}
-		$targetCI = $targetGroup.SelectSingleNode("f:ChildItems", $nsMgr)
-		if (-not $targetCI) {
-			# Create ChildItems for the group
-			$targetCI = $xmlDoc.CreateElement("ChildItems", $formNs)
-			$targetGroup.AppendChild($targetCI) | Out-Null
-		}
-	} elseif ($afterName) {
-		# Find the after element globally and use its parent as target
-		$afterElem = Find-Element $rootCI $afterName
-		if (-not $afterElem) {
-			Write-Host "[ERROR] Element '$afterName' not found"
-			exit 1
-		}
-		$targetCI = $afterElem.ParentNode
-	} else {
-		$targetCI = $rootCI
+	$beforeName = if ($def.before) { "$($def.before)" } else { $null }
+	if ($hasElems -and $afterName -and $beforeName) {
+		Write-Host "[ERROR] 'after' and 'before' exclude each other — give one anchor"
+		exit 1
 	}
 
-	if (-not $targetCI) {
-		# Create ChildItems section in form — insert after Events or AutoCommandBar
-		$targetCI = $xmlDoc.CreateElement("ChildItems", $formNs)
-		$insertAfter = $root.SelectSingleNode("f:Events", $nsMgr)
-		if (-not $insertAfter) { $insertAfter = $root.SelectSingleNode("f:AutoCommandBar", $nsMgr) }
-		if ($insertAfter) {
-			$refNode = $insertAfter.NextSibling
-			$ws = $xmlDoc.CreateWhitespace("`r`n`t")
-			$root.InsertBefore($ws, $refNode) | Out-Null
-			$root.InsertBefore($targetCI, $refNode) | Out-Null
+	# --- Target container (nothing is changed in the form yet) ---
+	$owner = $null
+	$targetCI = $null
+	$mode = 'plain'   # plain | cmd (command bar, context menu, popup, button group) | table
+	if ($hasElems) {
+		$holderTags = @('UsualGroup','ColumnGroup','Pages','Page','Table','AutoCommandBar','ContextMenu','CommandBar','ButtonGroup','Popup')
+		if ($intoName) {
+			$owner = Find-Target $intoName
+			if (-not $owner) {
+				Write-Host "[ERROR] Target '$intoName' not found"
+				exit 1
+			}
+			if ($holderTags -notcontains $owner.LocalName) {
+				Write-Host "[ERROR] Target '$intoName' is <$($owner.LocalName)> and holds no elements. Possible: group, pages, page, table, command bar, context menu, popup, button group"
+				exit 1
+			}
+			$targetCI = $owner.SelectSingleNode("f:ChildItems", $nsMgr)
+		} elseif ($afterName -or $beforeName) {
+			# Find the anchor globally and use its parent as target
+			$anchorName = if ($beforeName) { $beforeName } else { $afterName }
+			$anchor = Find-Target $anchorName
+			if (-not $anchor) {
+				Write-Host "[ERROR] Element '$anchorName' not found"
+				exit 1
+			}
+			if ($anchor.ParentNode.LocalName -ne 'ChildItems') {
+				Write-Host "[ERROR] '$anchorName' is <$($anchor.LocalName)>, a part of its element, not an item of a container — name the container with into"
+				exit 1
+			}
+			$targetCI = $anchor.ParentNode
+			$owner = $targetCI.ParentNode
 		} else {
-			$root.AppendChild($xmlDoc.CreateWhitespace("`r`n`t")) | Out-Null
-			$root.AppendChild($targetCI) | Out-Null
+			$owner = $root
+			$targetCI = $rootCI
 		}
-		# Also update $rootCI reference
-		$rootCI = $targetCI
+		if (-not [object]::ReferenceEquals($owner, $root)) {
+			if (@('AutoCommandBar','ContextMenu','CommandBar','ButtonGroup','Popup') -contains $owner.LocalName) { $mode = 'cmd' }
+			elseif ($owner.LocalName -eq 'Table') { $mode = 'table' }
+		}
 	}
 
-	# Detect indent level
-	$childIndent = Get-ChildIndent $targetCI
-
-	# Имена элементов уникальны (требование 1С). Сначала — внутри самого JSON-определения
-	# (рекурсивно по children/columns).
-	$elemTypeKeys = @("group","input","check","label","labelField","table","pages","page","button","picture","picField","calendar","cmdBar","popup")
-	function Walk-ElemNames($el, [hashtable]$seen) {
-		$tk = $null
-		foreach ($k in $elemTypeKeys) { if ($el.$k -ne $null) { $tk = $k; break } }
-		if ($tk) { Assert-EditUnique -name (Get-ElementName -el $el -typeKey $tk) -seen $seen -ctx 'element name' }
-		if ($el.children) { foreach ($c in $el.children) { Walk-ElemNames $c $seen } }
-		if ($el.columns)  { foreach ($c in $el.columns)  { Walk-ElemNames $c $seen } }
-	}
-	$dslElemNames = @{}
-	foreach ($el in $def.elements) { Walk-ElemNames $el $dslElemNames }
-
-	# Затем — против уже существующих элементов формы (дубль = битый XML, форма не откроется)
-	foreach ($el in $def.elements) {
-		$typeKey = $null
-		foreach ($key in $elemTypeKeys) {
-			if ($el.$key -ne $null) { $typeKey = $key; break }
-		}
-		if ($typeKey) {
-			$elName = Get-ElementName -el $el -typeKey $typeKey
-			$existing = Find-Element $rootCI $elName
-			if ($existing) {
-				Write-Host "[ERROR] Element '$elName' already exists in form (id=$($existing.GetAttribute('id'))) — element names must be unique"
+	# --- Attributes: refusals first, they are cheap ---
+	$existingAttrs = @{}
+	foreach ($ea in $root.SelectNodes("f:Attributes/f:Attribute", $nsMgr)) { $existingAttrs[$ea.GetAttribute("name")] = $ea }
+	$dslAttrNames = @{}
+	if ($hasAttrs) {
+		# Уникальность имён реквизитов: внутри JSON-определения (+ колонки в пределах реквизита) и
+		# против уже существующих реквизитов формы.
+		foreach ($attr in $def.attributes) {
+			Assert-EditUnique -name "$($attr.name)" -seen $dslAttrNames -ctx 'attribute name'
+			if ($attr.columns) {
+				$dslColNames = @{}
+				foreach ($col in $attr.columns) { Assert-EditUnique -name "$($col.name)" -seen $dslColNames -ctx "column name of '$($attr.name)'" }
+			}
+			if ($existingAttrs.ContainsKey("$($attr.name)")) {
+				Write-Host "[ERROR] Attribute '$($attr.name)' already exists in form — attribute names must be unique"
+				exit 1
+			}
+			if ((Test-IsDynamicListType "$($attr.type)") -and -not (Test-DynamicListSource $attr.settings)) {
+				Write-Host "[ERROR] Attribute '$($attr.name)': DynamicList requires settings.mainTable or settings.query — otherwise the form fails to open"
 				exit 1
 			}
 		}
 	}
 
-	# Remember starting element ID for companion counting
-	$startElemId = $script:nextElemId
-
-	# Generate fragment
-	$script:xml = New-Object System.Text.StringBuilder 4096
-	X "<_F $allNsDecl>"
-	foreach ($el in $def.elements) {
-		Emit-Element -el $el -indent $childIndent
+	# --- Temporary DSL ---
+	$dsl = New-Object PSObject
+	$stubNames = @{}
+	if ($hasElems) {
+		$dslElements = @($def.elements)
+		if ($mode -eq 'cmd') {
+			# the compiler applies its command-bar rules (CommandBarButton, ...) to the children of a cmdBar
+			$bar = New-Object PSObject
+			$bar | Add-Member -NotePropertyName "cmdBar" -NotePropertyValue "FormEditTmpBar"
+			$bar | Add-Member -NotePropertyName "children" -NotePropertyValue $dslElements
+			$dslElements = @($bar)
+		}
+		$dsl | Add-Member -NotePropertyName "elements" -NotePropertyValue $dslElements
 	}
-	X "</_F>"
-
-	$fragDoc = Parse-Fragment $script:xml.ToString()
-	$importedNodes = Import-ElementNodes $fragDoc
-
-	# Count actual elements (non-companion) for reporting
-	foreach ($el in $def.elements) {
-		$typeKey = $null
-		foreach ($key in @("group","input","check","label","labelField","table","pages","page","button","picture","picField","calendar","cmdBar","popup")) {
-			if ($el.$key -ne $null) { $typeKey = $key; break }
-		}
-		$name = Get-ElementName -el $el -typeKey $typeKey
-		$tagMap = @{
-			"group"="Group"; "input"="Input"; "check"="Check"; "label"="Label"; "labelField"="LabelField"
-			"table"="Table"; "pages"="Pages"; "page"="Page"; "button"="Button"
-			"picture"="Picture"; "picField"="PicField"; "calendar"="Calendar"; "cmdBar"="CmdBar"; "popup"="Popup"
-		}
-		$pathStr = if ($el.path) { " -> $($el.path)" } else { "" }
-		$evtStr = if ($el.on) { " {$($el.on -join ', ')}" } else { "" }
-		$addedElems += "  + [$($tagMap[$typeKey])] $name$pathStr$evtStr"
-	}
-
-	# Insert each imported node
-	foreach ($node in $importedNodes) {
-		Insert-IntoContainer -container $targetCI -newNode $node -afterName $afterName -childIndent $childIndent
-		# Only use afterName for the first insertion; subsequent ones go after the previous
-		$afterName = $node.GetAttribute("name")
-	}
-
-	$totalNewElemIds = $script:nextElemId - $startElemId
-	$companionCount = $totalNewElemIds - $def.elements.Count
-}
-
-# === 11. Add attributes ===
-
-$addedAttrs = @()
-
-if ($def.attributes -and $def.attributes.Count -gt 0) {
-	$attrsSection = $root.SelectSingleNode("f:Attributes", $nsMgr)
-	if (-not $attrsSection) {
-		# Create Attributes section — insert after ChildItems or after Events
-		$attrsSection = $xmlDoc.CreateElement("Attributes", $formNs)
-		# Find insertion point: after ChildItems or after the last pre-Attributes element
-		$insertAfter = $rootCI
-		if (-not $insertAfter) {
-			$insertAfter = $root.SelectSingleNode("f:Events", $nsMgr)
-		}
-		if (-not $insertAfter) {
-			$insertAfter = $root.SelectSingleNode("f:AutoCommandBar", $nsMgr)
-		}
-		if ($insertAfter) {
-			$refNode = $insertAfter.NextSibling
-			$ws = $xmlDoc.CreateWhitespace("`r`n`t")
-			$root.InsertBefore($ws, $refNode) | Out-Null
-			$root.InsertBefore($attrsSection, $refNode) | Out-Null
-		} else {
-			$root.AppendChild($xmlDoc.CreateWhitespace("`r`n`t")) | Out-Null
-			$root.AppendChild($attrsSection) | Out-Null
+	$dslAttributes = @()
+	$dslAttrTypes = @{}
+	if ($hasAttrs) {
+		foreach ($attr in $def.attributes) {
+			$dslAttrTypes["$($attr.name)"] = if ($attr.type) { "$($attr.type)" } else { "(no type)" }
+			# form-compile infers the main attribute (and its SavedData) from a single object-like
+			# attribute; the form being edited already has its own.
+			if ($null -eq $attr.PSObject.Properties["main"]) { $attr | Add-Member -NotePropertyName "main" -NotePropertyValue $false }
+			$dslAttributes += $attr
 		}
 	}
-
-	# Detect indent for attribute children
-	$attrChildIndent = Get-ChildIndent $attrsSection
-	if (-not $attrChildIndent -or $attrChildIndent -eq "") { $attrChildIndent = "`t`t" }
-
-	# Уникальность имён реквизитов: внутри JSON-определения (+ колонки в пределах реквизита) и
-	# против уже существующих реквизитов формы.
-	$dslAttrNames = @{}
-	foreach ($attr in $def.attributes) {
-		Assert-EditUnique -name "$($attr.name)" -seen $dslAttrNames -ctx 'attribute name'
-		if ($attr.columns) {
-			$dslColNames = @{}
-			foreach ($col in $attr.columns) { Assert-EditUnique -name "$($col.name)" -seen $dslColNames -ctx "column name of '$($attr.name)'" }
-		}
-		$existingAttr = $attrsSection.SelectSingleNode("f:Attribute[@name='$($attr.name)']", $nsMgr)
-		if ($existingAttr) {
-			Write-Host "[ERROR] Attribute '$($attr.name)' already exists in form — attribute names must be unique"
-			exit 1
-		}
-		if ((Test-IsDynamicListType "$($attr.type)") -and -not (Test-DynamicListSource $attr.settings)) {
-			Write-Host "[ERROR] Attribute '$($attr.name)': DynamicList requires settings.mainTable or settings.query — otherwise the form fails to open"
-			exit 1
+	if ($hasElems) {
+		# A table bound to a DynamicList attribute of the form gets the list-table defaults of the
+		# compiler only when it sees that attribute: a stub stands in for it and is discarded.
+		$tablePaths = @{}
+		Get-TablePaths $def.elements $tablePaths
+		foreach ($tp in @($tablePaths.Keys)) {
+			if ($dslAttrNames.ContainsKey($tp) -or -not $existingAttrs.ContainsKey($tp)) { continue }
+			$typeNode = $existingAttrs[$tp].SelectSingleNode("f:Type/v8:Type", $nsMgr)
+			if (-not $typeNode -or $typeNode.InnerText.Trim() -ne "cfg:DynamicList") { continue }
+			$settings = New-Object PSObject
+			$mt = $existingAttrs[$tp].SelectSingleNode("f:Settings/f:MainTable", $nsMgr)
+			if ($mt -and $mt.InnerText.Trim()) { $settings | Add-Member -NotePropertyName "mainTable" -NotePropertyValue $mt.InnerText.Trim() }
+			else { $settings | Add-Member -NotePropertyName "query" -NotePropertyValue "stub" }
+			$stub = New-Object PSObject
+			$stub | Add-Member -NotePropertyName "name" -NotePropertyValue $tp
+			$stub | Add-Member -NotePropertyName "type" -NotePropertyValue "DynamicList"
+			$stub | Add-Member -NotePropertyName "main" -NotePropertyValue $false
+			$stub | Add-Member -NotePropertyName "settings" -NotePropertyValue $settings
+			$dslAttributes += $stub
+			$stubNames[$tp] = $true
 		}
 	}
+	if ($dslAttributes.Count -gt 0) { $dsl | Add-Member -NotePropertyName "attributes" -NotePropertyValue $dslAttributes }
 
-	# Generate attribute fragments
-	$script:xml = New-Object System.Text.StringBuilder 2048
-	X "<_F $allNsDecl>"
-	foreach ($attr in $def.attributes) {
-		$attrId = New-AttrId
-		$attrName = "$($attr.name)"
-		X "$attrChildIndent<Attribute name=`"$attrName`" id=`"$attrId`">"
-		$inner = "$attrChildIndent`t"
+	$compiled = Invoke-FormCompileFragment $dsl
+	$cRoot = $compiled.DocumentElement
+	$cNs = New-Object System.Xml.XmlNamespaceManager($compiled.NameTable)
+	$cNs.AddNamespace("f", $formNs)
 
-		if ($attr.title) { Emit-MLText -tag "Title" -text "$($attr.title)" -indent $inner }
-		if ($attr.type) { Emit-Type -typeStr "$($attr.type)" -indent $inner } else { X "$inner<Type/>" }
-		if ($attr.main -eq $true) { X "$inner<MainAttribute>true</MainAttribute>" }
-		if ($attr.savedData -eq $true) { X "$inner<SavedData>true</SavedData>" }
-		if ($attr.fillChecking) { X "$inner<FillChecking>$($attr.fillChecking)</FillChecking>" }
-
-		$typeStr = if ($attr.type) { "$($attr.type)" } else { "(no type)" }
-		$isDynamicList = Test-IsDynamicListType $typeStr
-		if ($attr.columns -and $attr.columns.Count -gt 0 -and -not $isDynamicList) {
-			X "$inner<Columns>"
-			$colId = 1
-			foreach ($col in $attr.columns) {
-				X "$inner`t<Column name=`"$($col.name)`" id=`"$colId`">"
-				if ($col.title) { Emit-MLText -tag "Title" -text "$($col.title)" -indent "$inner`t`t" }
-				Emit-Type -typeStr "$($col.type)" -indent "$inner`t`t"
-				X "$inner`t</Column>"
-				$colId++
+	# --- Compiled elements ---
+	$srcElems = @()
+	$srcElemIndent = "`t`t"
+	if ($hasElems) {
+		$srcCI = $cRoot.SelectSingleNode("f:ChildItems", $cNs)
+		if ($srcCI -and $mode -eq 'cmd') {
+			$srcBar = $srcCI.SelectSingleNode("f:CommandBar", $cNs)
+			$srcCI = if ($srcBar) { $srcBar.SelectSingleNode("f:ChildItems", $cNs) } else { $null }
+		}
+		if ($srcCI) {
+			foreach ($child in $srcCI.ChildNodes) {
+				if ($child.NodeType -eq 'Element') { $srcElems += $child }
 			}
-			X "$inner</Columns>"
+			foreach ($child in $srcCI.ChildNodes) {
+				if ($child.NodeType -eq 'Whitespace' -and $child.Value -match '^\r?\n(\t+)') { $srcElemIndent = $Matches[1]; break }
+			}
 		}
 
-		if ($isDynamicList) {
-			Emit-DynamicListSettings -settings $attr.settings -indent $inner
+		$ownerName = if ([object]::ReferenceEquals($owner, $root)) { "form" } else { $owner.GetAttribute("name") }
+		foreach ($n in $srcElems) {
+			$nName = $n.GetAttribute("name")
+			if ($mode -eq 'table' -and @('Button','ButtonGroup','Popup','CommandBar') -contains $n.LocalName) {
+				$tableBar = $owner.SelectSingleNode("f:AutoCommandBar", $nsMgr)
+				$hint = if ($tableBar) { "use into: `"$($tableBar.GetAttribute('name'))`"" } else { "the table has no command bar of its own" }
+				Write-Host "[ERROR] '$nName' is <$($n.LocalName)>: the ChildItems of table '$ownerName' hold its columns, buttons go to its command bar — $hint"
+				exit 1
+			}
+			if ($mode -eq 'cmd' -and @('Button','ButtonGroup','Popup') -notcontains $n.LocalName) {
+				Write-Host "[ERROR] '$nName' is <$($n.LocalName)>: '$ownerName' takes buttons, button groups and popups only"
+				exit 1
+			}
 		}
 
-		X "$attrChildIndent</Attribute>"
-		$addedAttrs += "  + ${attrName}: $typeStr (id=$attrId)"
+		# Имена элементов уникальны (требование 1С; дубль = битый XML, форма не откроется): против всех
+		# уже существующих узлов формы, компаньоны включены. Внутри определения следит form-compile.
+		$existingNames = @{}
+		foreach ($nn in @(Get-NamedNodes)) { $existingNames[$nn.GetAttribute("name")] = $nn }
+		foreach ($n in $srcElems) {
+			foreach ($nn in $n.SelectNodes('descendant-or-self::*[@name]')) {
+				if ($nn.LocalName -eq 'Event') { continue }
+				$nm = $nn.GetAttribute("name")
+				if ($existingNames.ContainsKey($nm)) {
+					Write-Host "[ERROR] Element '$nm' already exists in form (id=$($existingNames[$nm].GetAttribute('id'))) — element names must be unique"
+					exit 1
+				}
+			}
+		}
 	}
-	X "</_F>"
 
-	$fragDoc = Parse-Fragment $script:xml.ToString()
-	$importedAttrs = Import-ElementNodes $fragDoc
+	# --- Compiled attributes ---
+	$srcAttrs = @()
+	foreach ($a in $cRoot.SelectNodes("f:Attributes/f:Attribute", $cNs)) {
+		if (-not $stubNames.ContainsKey($a.GetAttribute("name"))) { $srcAttrs += $a }
+	}
 
-	foreach ($node in $importedAttrs) {
-		Insert-IntoContainer -container $attrsSection -newNode $node -afterName $null -childIndent $attrChildIndent
+	Ensure-Namespaces $compiled ($srcElems + $srcAttrs)
+
+	# --- Elements: target container, ids, indent, insertion ---
+	if ($hasElems -and $srcElems.Count -gt 0) {
+		if (-not $targetCI) {
+			if ([object]::ReferenceEquals($owner, $root)) {
+				# Create ChildItems section in form — insert after Events or AutoCommandBar
+				$targetCI = $xmlDoc.CreateElement("ChildItems", $formNs)
+				$insertAfter = $root.SelectSingleNode("f:Events", $nsMgr)
+				if (-not $insertAfter) { $insertAfter = $root.SelectSingleNode("f:AutoCommandBar", $nsMgr) }
+				if ($insertAfter) {
+					$refNode = $insertAfter.NextSibling
+					$ws = $xmlDoc.CreateWhitespace("`r`n`t")
+					$root.InsertBefore($ws, $refNode) | Out-Null
+					$root.InsertBefore($targetCI, $refNode) | Out-Null
+				} else {
+					$root.AppendChild($xmlDoc.CreateWhitespace("`r`n`t")) | Out-Null
+					$root.AppendChild($targetCI) | Out-Null
+				}
+				# Also update $rootCI reference
+				$rootCI = $targetCI
+			} else {
+				$targetCI = Ensure-ChildItems $owner
+			}
+		}
+		$childIndent = Get-ChildIndent $targetCI
+
+		$importedNodes = @()
+		foreach ($n in $srcElems) {
+			$node = $xmlDoc.ImportNode($n, $true)
+			Set-NodeIndent $node $srcElemIndent $childIndent
+			Set-ElementIds $node
+			$importedNodes += $node
+		}
+
+		# Report: what was added, from the compiled nodes
+		$companionTags = @('ExtendedTooltip','ContextMenu','SearchStringAddition','ViewStatusAddition','SearchControlAddition','AutoCommandBar')
+		foreach ($node in $importedNodes) {
+			$dp = $node.SelectSingleNode("f:DataPath", $nsMgr)
+			$pathStr = if ($dp) { " -> $($dp.InnerText)" } else { "" }
+			$evNames = @($node.SelectNodes("f:Events/f:Event", $nsMgr) | ForEach-Object { $_.GetAttribute("name") })
+			$evtStr = if ($evNames.Count -gt 0) { " {$($evNames -join ', ')}" } else { "" }
+			$addedElems += "  + [$($node.LocalName)] $($node.GetAttribute('name'))$pathStr$evtStr"
+			$companionCount += @($node.SelectNodes('descendant-or-self::*[@id]') | Where-Object { $companionTags -contains $_.LocalName }).Count
+		}
+
+		# Insert each imported node
+		foreach ($node in $importedNodes) {
+			Insert-IntoContainer -container $targetCI -newNode $node -afterName $afterName -childIndent $childIndent -beforeName $beforeName
+			# Only use afterName for the first insertion; subsequent ones go after the previous
+			if ($afterName) { $afterName = $node.GetAttribute("name") }
+		}
+	}
+
+	# --- Attributes ---
+	if ($srcAttrs.Count -gt 0) {
+		$attrsSection = $root.SelectSingleNode("f:Attributes", $nsMgr)
+		if (-not $attrsSection) {
+			# Create Attributes section — insert after ChildItems or after Events
+			$attrsSection = $xmlDoc.CreateElement("Attributes", $formNs)
+			# Find insertion point: after ChildItems or after the last pre-Attributes element
+			$insertAfter = $rootCI
+			if (-not $insertAfter) {
+				$insertAfter = $root.SelectSingleNode("f:Events", $nsMgr)
+			}
+			if (-not $insertAfter) {
+				$insertAfter = $root.SelectSingleNode("f:AutoCommandBar", $nsMgr)
+			}
+			if ($insertAfter) {
+				$refNode = $insertAfter.NextSibling
+				$ws = $xmlDoc.CreateWhitespace("`r`n`t")
+				$root.InsertBefore($ws, $refNode) | Out-Null
+				$root.InsertBefore($attrsSection, $refNode) | Out-Null
+			} else {
+				$root.AppendChild($xmlDoc.CreateWhitespace("`r`n`t")) | Out-Null
+				$root.AppendChild($attrsSection) | Out-Null
+			}
+		}
+
+		# Detect indent for attribute children
+		$attrChildIndent = Get-ChildIndent $attrsSection
+		if (-not $attrChildIndent -or $attrChildIndent -eq "") { $attrChildIndent = "`t`t" }
+
+		foreach ($a in $srcAttrs) {
+			$node = $xmlDoc.ImportNode($a, $true)
+			Set-NodeIndent $node "`t`t" $attrChildIndent
+			$attrId = New-AttrId
+			$node.SetAttribute("id", [string]$attrId)
+			# Column ids are per attribute, from 1 (as the platform writes them), direct columns
+			# and those inside AdditionalColumns alike, in document order
+			$colId = 1
+			foreach ($col in $node.SelectNodes("f:Columns//f:Column", $nsMgr)) { $col.SetAttribute("id", [string]$colId); $colId++ }
+			$typeStr = $dslAttrTypes[$node.GetAttribute("name")]
+			$addedAttrs += "  + $($node.GetAttribute('name')): $typeStr (id=$attrId)"
+			Insert-IntoContainer -container $attrsSection -newNode $node -afterName $null -childIndent $attrChildIndent
+		}
 	}
 }
 
@@ -1517,6 +1195,7 @@ if ($addedElems.Count -gt 0) {
 	$posStr = ""
 	if ($def.into) { $posStr += "into $($def.into)" }
 	if ($def.after) { if ($posStr) { $posStr += ", " }; $posStr += "after $($def.after)" }
+	if ($def.before) { if ($posStr) { $posStr += ", " }; $posStr += "before $($def.before)" }
 	if ($posStr) { $posStr = " ($posStr)" }
 	Write-Host "Added elements${posStr}:"
 	foreach ($line in $addedElems) { Write-Host $line }
