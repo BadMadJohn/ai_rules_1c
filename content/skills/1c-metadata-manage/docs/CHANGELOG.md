@@ -435,6 +435,10 @@ The PowerShell scripts under `tools/1c-subsystem-manage/scripts/` were refreshed
 
 ## template-manage.md
 
+### Local fix `2026-10-23` — `DataCompositionSchema` documented
+
+`template-manage.md` listed only HTML, Text, SpreadsheetDocument and BinaryData as `-TemplateType`, although `add-template.ps1` also accepts `DataCompositionSchema` (an empty schema with one local data source, and for a `Report` / `ExternalReport` it fills `MainDataCompositionSchema`). The type, the `-SetMainSKD` switch and the follow-up with `skd-compile` / `skd-validate` are now in the parameter list, the type table and the workflow. Docs only; the script is unchanged.
+
 ### Local fix `2026-09-13` — object XML paths
 
 `add-template.ps1 -ObjectName` accepts absolute and relative object XML paths and places the template beside the resolved object. Name-only configuration lookup and the EPF `ProcessorName` alias remain supported.
