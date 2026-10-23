@@ -267,6 +267,10 @@ The PowerShell scripts under `tools/1c-interface-manage/scripts/` were refreshed
 
 ## meta-manage.md
 
+### Local fix `2026-10-23` — turnover registers have no `RecordType`
+
+`meta-validate` (`.ps1` and `.py`) v1.13 → **v1.14**: Check 5 expected the standard attributes `Active, LineNumber, Recorder, Period, RecordType` for every `AccumulationRegister`, so a register with `<RegisterType>Turnovers</RegisterType>` — which has no `RecordType` — got a false warning `Missing StandardAttributes: RecordType`. For turnover registers `RecordType` is dropped from the expected list; a `RecordType` present on one is then reported as `Unexpected StandardAttribute`, which is correct. Balance registers are checked as before. Pinned by `tools/tests/metadata-tools-regression.ps1` and `tools/tests/python-ports-regression.py`.
+
 ### Local fix `2026-09-25` — versions, generated types, default forms, name clashes
 
 `meta-validate` v1.13, both runtimes with identical messages: object, form descriptor and `Form.xml` versions equal `Configuration.xml` (1e, 6e); every GeneratedType category is required and named exactly (2); `Default*Form` / `Auxiliary*Form` resolve to a declared form of the right role (6f); no `Description` / `Code` binding when the length is 0 (6g) and a warning when the default object form hides a mandatory `Description` nobody assigns (6h); case-insensitive name uniqueness shared by attributes, tabular sections, dimensions and resources (8); `Periodicity` and `DefaultRecordSetForm` forbidden in an information register (12); `cfg:Catalogs.X` is an error (16a). Over all 10 965 ERP objects none of the new error checks fires; 6h warns on 6 attached-file / exchange catalogs.

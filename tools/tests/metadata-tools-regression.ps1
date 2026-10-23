@@ -1660,6 +1660,26 @@ Register-Case 'mxl-decompile: an absolute -OutputPath is written, a relative one
     Assert-True (Test-Path -LiteralPath (Join-Path $Work 'rel.json')) 'the relative output file was not written beside the cwd'
 }
 
+Register-Case 'meta-validate: a turnover register has no RecordType, a balance register still needs it' {
+    param($Work)
+    Copy-Fixture 'config-dump' $Work "`n"
+    Copy-Fixture 'turnover-register' $Work "`n"
+    $target = Join-Path $Work 'AccumulationRegisters\TurnReg.xml'
+
+    $run = Invoke-Tool $MetaValidate @('-ObjectPath', $target, '-Detailed') $Work
+    $text = "$($run.StdOut)$($run.StdErr)"
+    Assert-Equal 0 $run.ExitCode "a turnover register was rejected: $text"
+    Assert-True ($text -notmatch 'Missing StandardAttributes') "false Missing StandardAttributes warning: $text"
+
+    # The same file declared as a balance register lacks RecordType for real.
+    $bom = New-Object System.Text.UTF8Encoding($true)
+    $balance = (Get-FileFacts $target).Text -replace '<RegisterType>Turnovers</RegisterType>', '<RegisterType>Balance</RegisterType>'
+    [System.IO.File]::WriteAllText($target, $balance, $bom)
+    $run = Invoke-Tool $MetaValidate @('-ObjectPath', $target, '-Detailed') $Work
+    $text = "$($run.StdOut)$($run.StdErr)"
+    Assert-True ($text -match 'Missing StandardAttributes: RecordType') "a balance register without RecordType was not warned about: $text"
+}
+
 # ---------------------------------------------------------------- run
 
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("1c-rules-regr-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
