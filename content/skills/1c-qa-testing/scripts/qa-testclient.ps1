@@ -7,10 +7,12 @@
   machine of the test client; QA MCP itself never touches Windows.
 
     start   - start 1cv8c.exe /TestClient on -Port, visible or on a hidden desktop
-              (-Hidden), and wait until the main window opens; -MaxSeconds closes
-              it after a deadline; a failed start returns 1C's own message
+              (-Hidden), and wait until the main window opens; -Execute adds
+              /Execute for that file on the same client; -MaxSeconds closes it
+              after a deadline; a failed start returns 1C's own message
     capture - save a PNG of the client's windows, also on the hidden desktop
-    stop    - close a client that this script started through its main window and
+    stop    - close a client that this script started through its main window,
+              click «Завершить работу» when that exit question is a window, and
               report whether the port is free; it ends the process only with -Force
     status  - what this script started on -Port; forgets a client that is gone
 
@@ -41,6 +43,8 @@ param(
     [string]$Out,
     # start: close the client this many seconds after launch, startup included; 0 = no limit.
     [int]$MaxSeconds = 0,
+    # start: external processor or report. 1C /Execute on the client this script tracks.
+    [string]$Execute,
     [int]$TimeoutSec = 180,
     # stop: how long to wait for the client to close by itself.
     [int]$CloseTimeoutSec = 60,
@@ -54,7 +58,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 $StateDir = Join-Path $env:LOCALAPPDATA 'mcp_qa_testclient'
 $StateFile = Join-Path $StateDir "$Port.json"
 
-Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
+$nativeSource = @'
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -153,6 +157,7 @@ public static class QaTestClientNative {
     }
 
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr hwnd, EnumProc cb, IntPtr lParam);
 
     // A client killed by force keeps its place in the developer licence count of a file
     // infobase while another process holds the base open, so the main window is closed first.
@@ -170,6 +175,49 @@ public static class QaTestClientNative {
                 if (handle != IntPtr.Zero) CloseDesktop(handle);
             }
         });
+    }
+
+    // The exit question is often an owned V8Window, so WM_CLOSE on the main window
+    // leaves it open. Click only a child whose text is the exit button. A question
+    // that is visible but has no such window stays for the caller to report.
+    public static string DismissExitQuestion(int pid, string desktop) {
+        return OnThread<string>(delegate() {
+            IntPtr handle = IntPtr.Zero;
+            try {
+                bool sawQuestion = false;
+                foreach (IntPtr hwnd in ClientWindows(pid, desktop, out handle)) {
+                    if (TitleHas(hwnd, "Завершить работу с программой?")) sawQuestion = true;
+                    List<IntPtr> children = new List<IntPtr>();
+                    EnumChildWindows(hwnd, delegate(IntPtr child, IntPtr lParam) {
+                        children.Add(child);
+                        return true;
+                    }, IntPtr.Zero);
+                    foreach (IntPtr child in children) {
+                        if (TitleHas(child, "Завершить работу с программой?")) sawQuestion = true;
+                        if (!TitleIs(child, "Завершить работу")) continue;
+                        sawQuestion = true;
+                        if (PostMessage(child, 0x00F5 /* BM_CLICK */, IntPtr.Zero, IntPtr.Zero)) return "clicked";
+                    }
+                }
+                return sawQuestion ? "unclickable" : "not-found";
+            } finally {
+                if (handle != IntPtr.Zero) CloseDesktop(handle);
+            }
+        });
+    }
+
+    static bool TitleIs(IntPtr hwnd, string expected) {
+        return WindowTitle(hwnd) == expected;
+    }
+
+    static bool TitleHas(IntPtr hwnd, string expected) {
+        return WindowTitle(hwnd).IndexOf(expected, StringComparison.Ordinal) >= 0;
+    }
+
+    static string WindowTitle(IntPtr hwnd) {
+        StringBuilder text = new StringBuilder(512);
+        GetWindowText(hwnd, text, text.Capacity);
+        return text.ToString();
     }
 
     // 8.3 names the main window class V8TopLevelFrame*. In 8.5 every client window, a
@@ -285,6 +333,37 @@ public static class QaTestClientNative {
 }
 '@
 
+# PowerShell 7 drops the default compile references when -ReferencedAssemblies is set,
+# so List<> and System.Drawing fail together. 5.1 keeps the short System.Drawing reference.
+if ($PSEdition -eq 'Core') {
+    $refDir = Join-Path $PSHome 'ref'
+    $refs = New-Object System.Collections.Generic.List[string]
+    foreach ($name in @(
+            'System.Runtime.dll', 'System.Collections.dll', 'System.Linq.dll',
+            'System.Runtime.InteropServices.dll', 'System.ComponentModel.Primitives.dll',
+            'System.ComponentModel.TypeConverter.dll', 'netstandard.dll')) {
+        $path = Join-Path $refDir $name
+        if (Test-Path -LiteralPath $path) { [void]$refs.Add($path) }
+    }
+    $drawing = Join-Path $refDir 'System.Drawing.Common.dll'
+    if (-not (Test-Path -LiteralPath $drawing)) { $drawing = Join-Path $refDir 'System.Drawing.dll' }
+    if (-not (Test-Path -LiteralPath $drawing)) {
+        $desktopRoot = Join-Path $env:ProgramFiles 'dotnet\shared\Microsoft.WindowsDesktop.App'
+        $desktop = Get-ChildItem -LiteralPath $desktopRoot -Directory -ErrorAction SilentlyContinue |
+            Sort-Object { try { [version]$_.Name } catch { [version]'0.0' } } -Descending |
+            Select-Object -First 1
+        if ($desktop) { $drawing = Join-Path $desktop.FullName 'System.Drawing.Common.dll' }
+    }
+    if (-not (Test-Path -LiteralPath $drawing)) {
+        throw "System.Drawing.Common was not found under $refDir or Microsoft.WindowsDesktop.App. PowerShell 7 needs it to compile the screenshot helper."
+    }
+    [void]$refs.Add($drawing)
+    if ($refs.Count -lt 2) { throw "PowerShell 7 reference assemblies were not found under $refDir." }
+    Add-Type -ReferencedAssemblies $refs.ToArray() -TypeDefinition $nativeSource
+} else {
+    Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $nativeSource
+}
+
 function Write-Result([hashtable]$Data) {
     [pscustomobject]$Data | ConvertTo-Json -Compress -Depth 5
 }
@@ -346,6 +425,10 @@ function Find-Client {
 
 function Start-TestClient {
     if (-not $Base -and -not $Server) { throw 'Pass -Base <file infobase> or -Server <server\infobase>' }
+    if ($Execute) {
+        if (-not (Test-Path -LiteralPath $Execute -PathType Leaf)) { throw "External file not found: $Execute" }
+        $Execute = [IO.Path]::GetFullPath($Execute)
+    }
     $state = Read-State
     if ($state) {
         if (Test-ClientAlive $state) { throw "A client started by this script already runs on port $Port (pid $($state.pid)); if it was just closed, it is still exiting - run 'status' again shortly" }
@@ -366,6 +449,7 @@ function Start-TestClient {
     # Start-up errors (licence, sign-in) are not shown with /DisableStartupDialogs; 1C writes them here.
     $log = Join-Path $StateDir "$Port.log"
     $arguments += @('/TestClient', "-TPort$Port", '/DisableStartupDialogs', '/DisableStartupMessages', "/Out `"$log`"")
+    if ($Execute) { $arguments += "/Execute`"$Execute`"" }
     $workDir = Split-Path -Parent $client.Exe
 
     $desktop = ''
@@ -386,6 +470,7 @@ function Start-TestClient {
             base = $(if ($Base) { $Base } else { $Server }); version = "$($client.Version)"
             started = (Get-Date).ToString('s')
         }
+        if ($Execute) { $state.execute = $Execute }
         $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
         $startTime = if ($process) { $process.StartTime.ToFileTimeUtc() } else { 0 }
         if ($startTime) { $state.start_time = "$startTime" }
@@ -469,15 +554,28 @@ function Stop-TestClient {
     $how = 'not running'
     if ($alive) {
         $how = 'closed'
+        $question = [QaTestClientNative]::DismissExitQuestion([int]$state.pid, [string]$state.desktop)
         [void][QaTestClientNative]::CloseMainWindows([int]$state.pid, [string]$state.desktop)
         $wait = (Get-Date).AddSeconds($CloseTimeoutSec)
-        while ((Test-ClientAlive $state) -and (Get-Date) -lt $wait) { Start-Sleep -Milliseconds 500 }
+        while ((Test-ClientAlive $state) -and (Get-Date) -lt $wait) {
+            $seen = [QaTestClientNative]::DismissExitQuestion([int]$state.pid, [string]$state.desktop)
+            if ($seen -eq 'clicked' -or $seen -eq 'unclickable') { $question = $seen }
+            if (-not (Test-ClientAlive $state)) { break }
+            Start-Sleep -Milliseconds 500
+        }
         if (Test-ClientAlive $state) {
             if (-not $Force) {
                 # The state and the watchdog stay: the client is still this script's to close.
+                $waiting = $question -eq 'unclickable'
                 return @{
-                    port = $Port; pid = $state.pid; stopped = $false; how = 'still closing'; port_free = -not (Get-Listener)
-                    error = "The client has not closed in $CloseTimeoutSec s: it is still exiting or a question is waiting - run 'capture', then 'stop' again; 'stop -Force' ends the process"
+                    port = $Port; pid = $state.pid; stopped = $false
+                    how = $(if ($waiting) { 'exit question' } else { 'still closing' })
+                    port_free = -not (Get-Listener)
+                    error = $(if ($waiting) {
+                        "The exit question is open, but «Завершить работу» is not a window this script can click. Run 'capture', then 'stop' again; 'stop -Force' ends the process"
+                    } else {
+                        "The client has not closed in $CloseTimeoutSec s: it is still exiting or a question is waiting - run 'capture', then 'stop' again; 'stop -Force' ends the process"
+                    })
                 }
             }
             Stop-Process -Id $state.pid -Force
@@ -501,6 +599,7 @@ function Get-TestClientStatus {
             $result.started_here = $true; $result.alive = $true
             $result.pid = $state.pid; $result.hidden = $state.hidden; $result.base = $state.base
             if ($state.deadline) { $result.deadline = $state.deadline }
+            if ($state.execute) { $result.execute = [string]$state.execute }
         } else {
             Remove-StaleState $state
             $result.gone = @{ pid = $state.pid; started = $state.started }
