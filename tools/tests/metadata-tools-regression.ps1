@@ -1547,6 +1547,54 @@ Register-Case 'dump-validate: missing composition, invalid metadata root and uns
     Assert-DumpFinding $result 'dump-format-unsupported'
 }
 
+Register-Case 'db-update: -SessionTerminate lands right after /UpdateDBCfg (1cv8) and as --session-terminate= (ibcmd)' {
+    param($Work)
+    # A tiny console program stands in for 1cv8.exe / ibcmd.exe: it records its command
+    # line and writes the /DumpResult verdict, so only the argument order is under test.
+    $DbUpdate = Join-Path $ToolsDir '1c-db-ops\scripts\db-update.ps1'
+    $source = @'
+using System;
+using System.IO;
+public static class FakePlatform {
+    public static int Main(string[] a) {
+        string self = System.Reflection.Assembly.GetExecutingAssembly().Location;
+        File.WriteAllText(Path.Combine(Path.GetDirectoryName(self), "captured-args.txt"), string.Join(" ", a));
+        for (int i = 0; i + 1 < a.Length; i++) {
+            if (a[i] == "/DumpResult") File.WriteAllText(a[i + 1], "0");
+        }
+        return 0;
+    }
+}
+'@
+    $binDir = Join-Path $Work 'bin'
+    New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+    $fake1cv8 = Join-Path $binDir '1cv8.exe'
+    Add-Type -TypeDefinition $source -OutputAssembly $fake1cv8 -OutputType ConsoleApplication
+    $fakeIbcmd = Join-Path $binDir 'ibcmd.exe'
+    Copy-Item -LiteralPath $fake1cv8 -Destination $fakeIbcmd
+    $ib = Join-Path $Work 'ib'
+    New-Item -ItemType Directory -Path $ib -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $ib '1Cv8.1CD'), 'x')
+    $captured = Join-Path $binDir 'captured-args.txt'
+
+    $run = Invoke-Tool $DbUpdate @('-V8Path', $fake1cv8, '-InfoBasePath', $ib, '-Dynamic', 'auto', '-SessionTerminate', 'force') $Work
+    Assert-Equal 0 $run.ExitCode "db-update 1cv8 (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    $line = [System.IO.File]::ReadAllText($captured)
+    Assert-True ($line -match '/UpdateDBCfg -Dynamic\+ -SessionTerminate force /Out ') "1cv8 command line: $line"
+
+    $run = Invoke-Tool $DbUpdate @('-V8Path', $fakeIbcmd, '-InfoBasePath', $ib, '-SessionTerminate', 'force') $Work
+    Assert-Equal 0 $run.ExitCode "db-update ibcmd (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    $line = [System.IO.File]::ReadAllText($captured)
+    Assert-True ($line -match 'config apply .*--session-terminate=force') "ibcmd command line: $line"
+
+    $run = Invoke-Tool $DbUpdate @('-V8Path', $fake1cv8, '-InfoBasePath', $ib, '-AdditionalV8Arguments:-SessionTerminate,force') $Work
+    Assert-True ($run.ExitCode -ne 0) 'a duplicate -SessionTerminate through the additional arguments was accepted'
+    Assert-True ("$($run.StdOut)$($run.StdErr)" -match 'use -SessionTerminate') "no hint to the new parameter: $($run.StdOut)"
+
+    $run = Invoke-Tool $DbUpdate @('-V8Path', $fake1cv8, '-InfoBasePath', $ib, '-SessionTerminate', 'maybe') $Work
+    Assert-True ($run.ExitCode -ne 0) 'an unknown -SessionTerminate mode was accepted'
+}
+
 # ---------------------------------------------------------------- run
 
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("1c-rules-regr-" + [guid]::NewGuid().ToString('N').Substring(0, 8))

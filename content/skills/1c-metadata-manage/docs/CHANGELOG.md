@@ -121,6 +121,10 @@ An extension is the **default answer** when a typical object on vendor support n
 
 ## db-manage.md
 
+### Local fix `2026-10-23` — `db-update -SessionTerminate`
+
+`db-update` v1.14 → **v1.15**: the script could not end open sessions. `-AdditionalV8Arguments '-SessionTerminate','force'` lands at the end of the command line, after `/Out` and `/DumpResult`, where the platform ignores it, so the update failed with the exclusive-lock error whenever any session was open. New `-SessionTerminate disable|prompt|force`: for `1cv8` it is emitted right after `/UpdateDBCfg` (`/UpdateDBCfg -Dynamic+ -SessionTerminate force`, the form `/update1cbase` and `/deploy-and-test` use), for `ibcmd` as `--session-terminate=<mode>` (the `config apply` key `/deploy-and-test` uses). The key is also in the owned-key lists, so passing it through the additional-argument parameters is refused with a hint to the new parameter. `/update1cbase` Step 3b still runs Designer directly and is unchanged. Pinned by `tools/tests/metadata-tools-regression.ps1` (a stub platform executable records the command line).
+
 ### Local fix `2026-10-20` — `-Dynamic` takes `auto` / `disable`
 
 `db-update` v1.13 → **v1.14** (support ticket 7557c7cf): through `powershell.exe -File` a lone `-Dynamic "-"` never reaches the script — Windows PowerShell 5.1 exits with a non-zero code and no output, so the agent saw a silent failure instead of `/UpdateDBCfg -Dynamic-`. `-Dynamic` now also accepts `auto` and `disable` (the ibcmd spellings), mapped to `+` / `-`; `+` / `-` keep working in-process, and `-Dynamic:-` works through `-File` as well. Checked on a throwaway 8.3.27.2130 file base: `-File … -Dynamic disable` → `-Dynamic-`, `auto` → `-Dynamic+`, both exit 0.
