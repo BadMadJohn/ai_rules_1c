@@ -324,6 +324,10 @@ The compile/decompile/info scripts (`mxl-compile`, `mxl-decompile`, `mxl-info`) 
 
 ## role-manage.md
 
+### Local fix `2026-10-23` — `role-compile` parameter name
+
+`role-manage.md` called `role-compile.ps1 -RolePath`, but the script parameter is `-JsonPath`, so the documented command failed with a PowerShell parameter error. The doc now uses `-JsonPath`, and `role-compile` v1.8 → **v1.9** accepts `-RolePath` as an alias of it, so commands written from the old doc keep working.
+
 ### Local fix `2026-10-14` — `role-validate` parameters, rights-only edits
 
 The validate section described `-MetadataPath`, which `role-validate.ps1` does not have (the call failed with a PowerShell parameter error; support ticket d3372592): the metadata file is located from the `Rights.xml` path. The section now lists the real parameters (`-RightsPath` / `-Path`, `-OutFile`, `-Detailed`, `-MaxErrors`). The manual fallback for rights-only edits of an existing role contradicted `SKILL.md → Hard rule`; it is now one of its documented exceptions, because no tool edits a role in place.
