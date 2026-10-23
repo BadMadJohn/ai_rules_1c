@@ -1,4 +1,4 @@
-﻿# form-edit v1.8 — Edit 1C managed form elements
+﻿# form-edit v1.9 — Edit 1C managed form elements
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 # Local: DynamicList attributes require settings.mainTable or settings.query
 # and emit <Settings xsi:type="DynamicList">. An attribute without a source
@@ -21,6 +21,10 @@
 # (a property is compiled by form-compile and replaces / is inserted by the child order the
 # vendor dumps show; null / [] / {} removes it); it runs before the additions and only sees the
 # elements the form had before this edit.
+# Local (v1.9): `move` puts existing elements (with their subtree and ids) into / after / before
+# another place, `remove` takes elements out with their companions; a removal that is still
+# referenced (AdditionSource, StandardCommand buttons, ConditionalAppearance, Items.X data paths,
+# Elements.X in Module.bsl) is refused unless "force": true. Order: remove, move, set, additions.
 param(
 	[Parameter(Mandatory)]
 	[Alias('Path')]
@@ -219,6 +223,7 @@ $v8Ns = "http://v8.1c.ru/8.1/data/core"
 $nsMgr = New-Object System.Xml.XmlNamespaceManager($xmlDoc.NameTable)
 $nsMgr.AddNamespace("f", $formNs)
 $nsMgr.AddNamespace("v8", $v8Ns)
+$nsMgr.AddNamespace("dcsset", "http://v8.1c.ru/8.1/data-composition-system/settings")
 
 $root = $xmlDoc.DocumentElement
 
@@ -501,6 +506,93 @@ function Insert-IntoContainer($container, $newNode, $afterName, $childIndent, $b
 		$closeWs = $xmlDoc.CreateWhitespace("`r`n$parentIndent")
 		$container.AppendChild($closeWs) | Out-Null
 	}
+}
+
+# === 8b. Target of a placement (add and move) ===
+
+$script:holderTags = @('UsualGroup','ColumnGroup','Pages','Page','Table','AutoCommandBar','ContextMenu','CommandBar','ButtonGroup','Popup')
+$script:cmdHolderTags = @('AutoCommandBar','ContextMenu','CommandBar','ButtonGroup','Popup')
+
+# The container a placement (into / after / before) leads to; nothing is changed in the form.
+# Mode: plain | cmd (command bar, context menu, popup, button group) | table.
+function Resolve-Target([string]$intoName, [string]$afterName, [string]$beforeName) {
+	$owner = $null
+	$targetCI = $null
+	$mode = 'plain'
+	if ($intoName) {
+		$owner = Find-Target $intoName
+		if (-not $owner) {
+			Write-Host "[ERROR] Target '$intoName' not found"
+			exit 1
+		}
+		if ($script:holderTags -notcontains $owner.LocalName) {
+			Write-Host "[ERROR] Target '$intoName' is <$($owner.LocalName)> and holds no elements. Possible: group, pages, page, table, command bar, context menu, popup, button group"
+			exit 1
+		}
+		$targetCI = $owner.SelectSingleNode("f:ChildItems", $nsMgr)
+	} elseif ($afterName -or $beforeName) {
+		# Find the anchor globally and use its parent as target
+		$anchorName = if ($beforeName) { $beforeName } else { $afterName }
+		$anchor = Find-Target $anchorName
+		if (-not $anchor) {
+			Write-Host "[ERROR] Element '$anchorName' not found"
+			exit 1
+		}
+		if ($anchor.ParentNode.LocalName -ne 'ChildItems') {
+			Write-Host "[ERROR] '$anchorName' is <$($anchor.LocalName)>, a part of its element, not an item of a container — name the container with into"
+			exit 1
+		}
+		$targetCI = $anchor.ParentNode
+		$owner = $targetCI.ParentNode
+	} else {
+		$owner = $root
+		$targetCI = $rootCI
+	}
+	if (-not [object]::ReferenceEquals($owner, $root)) {
+		if ($script:cmdHolderTags -contains $owner.LocalName) { $mode = 'cmd' }
+		elseif ($owner.LocalName -eq 'Table') { $mode = 'table' }
+	}
+	return [pscustomobject]@{ Owner = $owner; TargetCI = $targetCI; Mode = $mode }
+}
+
+# Why an element of this tag cannot go into the target (or $null).
+function Get-PlacementError($target, [string]$tag, [string]$name) {
+	$owner = $target.Owner
+	$ownerName = if ([object]::ReferenceEquals($owner, $root)) { "form" } else { $owner.GetAttribute("name") }
+	if ($target.Mode -eq 'table' -and @('Button','ButtonGroup','Popup','CommandBar') -contains $tag) {
+		$tableBar = $owner.SelectSingleNode("f:AutoCommandBar", $nsMgr)
+		$hint = if ($tableBar) { "use into: `"$($tableBar.GetAttribute('name'))`"" } else { "the table has no command bar of its own" }
+		return "'$name' is <$tag>: the ChildItems of table '$ownerName' hold its columns, buttons go to its command bar — $hint"
+	}
+	if ($target.Mode -eq 'cmd' -and @('Button','ButtonGroup','Popup') -notcontains $tag) {
+		return "'$name' is <$tag>: '$ownerName' takes buttons, button groups and popups only"
+	}
+	return $null
+}
+
+# The ChildItems of the target, created when the owner has none.
+function Ensure-TargetCI($target) {
+	if ($target.TargetCI) { return $target.TargetCI }
+	$owner = $target.Owner
+	if ([object]::ReferenceEquals($owner, $root)) {
+		# Create ChildItems section in form — insert after Events or AutoCommandBar
+		$ci = $xmlDoc.CreateElement("ChildItems", $formNs)
+		$insertAfter = $root.SelectSingleNode("f:Events", $nsMgr)
+		if (-not $insertAfter) { $insertAfter = $root.SelectSingleNode("f:AutoCommandBar", $nsMgr) }
+		if ($insertAfter) {
+			$refNode = $insertAfter.NextSibling
+			$ws = $xmlDoc.CreateWhitespace("`r`n`t")
+			$root.InsertBefore($ws, $refNode) | Out-Null
+			$root.InsertBefore($ci, $refNode) | Out-Null
+		} else {
+			$root.AppendChild($xmlDoc.CreateWhitespace("`r`n`t")) | Out-Null
+			$root.AppendChild($ci) | Out-Null
+		}
+		# Also update $rootCI reference
+		$script:rootCI = $ci
+		return $ci
+	}
+	return (Ensure-ChildItems $owner)
 }
 
 # === 9. Generate fragment, parse, import nodes ===
@@ -895,6 +987,256 @@ function Read-SetOff($raw, [string]$what) {
 	return ,$list
 }
 
+# === 9d. remove and move: existing elements ===
+# Order of one JSON: remove, move, set, then the additions (elements, attributes, commands,
+# events). What an earlier step removed is gone for the later ones.
+
+function Test-InSubtrees($node, $roots) {
+	for ($a = $node; $a; $a = $a.ParentNode) {
+		foreach ($r in $roots) { if ([object]::ReferenceEquals($a, $r)) { return $true } }
+	}
+	return $false
+}
+
+# An item of a ChildItems (not a companion, which is a part of its owner).
+function Get-ItemNode([string]$name, [string]$what) {
+	$node = Find-Target $name
+	if (-not $node) { Write-Host "[ERROR] ${what}: element '$name' not found"; exit 1 }
+	if ($node.ParentNode.LocalName -ne 'ChildItems') {
+		Write-Host "[ERROR] ${what}: '$name' is <$($node.LocalName)>, a part of its element, not an item of a container"
+		exit 1
+	}
+	return $node
+}
+
+# An emptied ChildItems goes with its framing; the platform writes a group without children
+# (and a command bar without items) without ChildItems, an empty bar as a self-closing tag.
+function Remove-EmptyChildItems($ci) {
+	if (-not $ci -or -not $ci.ParentNode) { return }
+	if (@($ci.ChildNodes | Where-Object { $_.NodeType -eq 'Element' }).Count -gt 0) { return }
+	$owner = $ci.ParentNode
+	Remove-NodeWithWs $ci
+	if ($owner.NodeType -eq 'Element' -and @($owner.ChildNodes | Where-Object { $_.NodeType -eq 'Element' }).Count -eq 0 -and -not [object]::ReferenceEquals($owner, $root)) {
+		foreach ($c in @($owner.ChildNodes)) { $owner.RemoveChild($c) | Out-Null }
+		$owner.IsEmpty = $true
+	}
+}
+
+# Code of a BSL module without comments and the content of string literals (a string goes on
+# on the next line while it is not closed; "" inside a string is a quote).
+function Get-BslCodeLines([string]$text) {
+	$out = New-Object System.Collections.ArrayList
+	$inStr = $false
+	foreach ($line in ($text -split "`r?`n")) {
+		$sb = New-Object System.Text.StringBuilder
+		$i = 0
+		$len = $line.Length
+		while ($i -lt $len) {
+			$c = $line[$i]
+			if ($inStr) {
+				if ($c -eq '"') {
+					if ($i + 1 -lt $len -and $line[$i + 1] -eq '"') { $i += 2; continue }
+					$inStr = $false
+					[void]$sb.Append(' ')
+				}
+				$i++
+				continue
+			}
+			if ($c -eq '"') { $inStr = $true; [void]$sb.Append(' '); $i++; continue }
+			if ($c -eq '/' -and $i + 1 -lt $len -and $line[$i + 1] -eq '/') { break }
+			[void]$sb.Append($c)
+			$i++
+		}
+		[void]$out.Add($sb.ToString())
+	}
+	return ,$out
+}
+
+$removeNames = @()
+$moveNames = @()
+if ($def.remove) { $removeNames = @($def.remove | ForEach-Object { "$_" }) }
+if ($def.move -and $def.move.elements) { $moveNames = @($def.move.elements | ForEach-Object { "$_" }) }
+foreach ($mn in $moveNames) {
+	if ($removeNames -contains $mn) { Write-Host "[ERROR] '$mn' is both removed and moved"; exit 1 }
+}
+$script:removedNames = @{}
+$removedLines = New-Object System.Collections.ArrayList
+$movedLines = New-Object System.Collections.ArrayList
+
+# --- remove ---
+if ($removeNames.Count -gt 0) {
+	$rmSeen = @{}
+	$rmNodes = @()
+	foreach ($rn in $removeNames) {
+		if ($rmSeen.ContainsKey($rn)) { Write-Host "[ERROR] remove: '$rn' is named twice"; exit 1 }
+		$rmSeen[$rn] = $true
+		$rmNodes += (Get-ItemNode $rn 'remove')
+	}
+	# nested ones leave with the outer one
+	$rmRoots = @($rmNodes | Where-Object { $n0 = $_; -not (@($rmNodes | Where-Object { -not [object]::ReferenceEquals($_, $n0) -and (Test-InSubtrees $n0.ParentNode @($_)) }).Count -gt 0) })
+
+	# names of everything that leaves: the elements, their descendants and companions
+	$gone = @{}
+	foreach ($r in $rmRoots) {
+		foreach ($nn in $r.SelectNodes('descendant-or-self::*[@name]')) {
+			if ($nn.LocalName -ne 'Event') { $gone[$nn.GetAttribute("name")] = $true }
+		}
+	}
+
+	# --- references from outside the removed subtrees ---
+	$refs = New-Object System.Collections.ArrayList
+	$nameLetter = '[\p{L}\p{N}_]'
+	function Get-RefWhere($e) {
+		$holder = $e.ParentNode
+		while ($holder -and $holder.NodeType -eq 'Element' -and -not $holder.GetAttribute("name")) { $holder = $holder.ParentNode }
+		if ($holder -and $holder.NodeType -eq 'Element' -and $holder.GetAttribute("name")) { return "<$($e.LocalName)> of <$($holder.LocalName)> '$($holder.GetAttribute('name'))'" }
+		return "<$($e.LocalName)>"
+	}
+	foreach ($e in @($xmlDoc.SelectNodes('//*'))) {
+		if (Test-InSubtrees $e $rmRoots) { continue }
+		$text = $null
+		foreach ($cn in $e.ChildNodes) { if ($cn.NodeType -eq 'Text' -or $cn.NodeType -eq 'CDATA') { $text = "$($cn.Value)"; break } }
+		if ($null -eq $text) { continue }
+		$ln = $e.LocalName
+		if ($ln -eq 'Item' -and $e.ParentNode.LocalName -eq 'AdditionSource' -and $gone.ContainsKey($text.Trim())) {
+			[void]$refs.Add([pscustomobject]@{ Name = $text.Trim(); Where = "AdditionSource of '$($e.ParentNode.ParentNode.GetAttribute('name'))'" })
+			continue
+		}
+		if ($ln -eq 'AssociatedTableElementId' -and $gone.ContainsKey($text.Trim())) {
+			[void]$refs.Add([pscustomobject]@{ Name = $text.Trim(); Where = "command '$($e.ParentNode.GetAttribute('name'))' (AssociatedTableElementId)" })
+			continue
+		}
+		if ($ln -eq 'CommandName') {
+			foreach ($m in [regex]::Matches($text, 'Form\.Item\.([^.\s]+)\.')) {
+				if ($gone.ContainsKey($m.Groups[1].Value)) { [void]$refs.Add([pscustomobject]@{ Name = $m.Groups[1].Value; Where = (Get-RefWhere $e) + " ($text)" }) }
+			}
+			continue
+		}
+		foreach ($m in [regex]::Matches($text, "(?<!$nameLetter)Items\.($nameLetter+)(?!$nameLetter)")) {
+			if ($gone.ContainsKey($m.Groups[1].Value)) { [void]$refs.Add([pscustomobject]@{ Name = $m.Groups[1].Value; Where = (Get-RefWhere $e) + " ($($text.Trim()))" }) }
+		}
+	}
+	foreach ($f in @($root.SelectNodes('f:Attributes/f:ConditionalAppearance//dcsset:selection/dcsset:item/dcsset:field', $nsMgr))) {
+		if ($gone.ContainsKey($f.InnerText.Trim())) { [void]$refs.Add([pscustomobject]@{ Name = $f.InnerText.Trim(); Where = "the selection of the ConditionalAppearance of the form" }) }
+	}
+
+	# --- the form module ---
+	$modulePath = $null
+	$moduleText = $null
+	$extPath = [System.IO.Path]::GetDirectoryName($resolvedFormPath)
+	if ($extPath -and [System.IO.Path]::GetFileName($extPath) -eq "Ext") {
+		$modulePath = Join-Path (Join-Path $extPath "Form") "Module.bsl"
+		if (Test-Path -LiteralPath $modulePath) { $moduleText = [System.IO.File]::ReadAllText($modulePath, (New-Object System.Text.UTF8Encoding($false))) }
+	}
+	if ($moduleText) {
+		$codeLines = Get-BslCodeLines $moduleText
+		foreach ($gn in @($gone.Keys)) {
+			$re = New-Object System.Text.RegularExpressions.Regex("(?<!$nameLetter)(Элементы|Items)\.$([regex]::Escape($gn))(?!$nameLetter)", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+			for ($li = 0; $li -lt $codeLines.Count; $li++) {
+				if ($re.IsMatch($codeLines[$li])) { [void]$refs.Add([pscustomobject]@{ Name = $gn; Where = "Module.bsl line $($li + 1)" }) }
+			}
+		}
+	}
+
+	$force = ($null -ne $def.PSObject.Properties['force'] -and $def.force -eq $true)
+	foreach ($rf in $refs) {
+		if ($force) { Write-Host "[WARN] '$($rf.Name)' is referenced by $($rf.Where) - removed anyway (force)" }
+		else { Write-Host "[ERROR] '$($rf.Name)' is referenced by $($rf.Where)" }
+	}
+	if ($refs.Count -gt 0 -and -not $force) {
+		Write-Host "[ERROR] nothing was written: remove what refers to the elements first, or give `"force`": true"
+		exit 1
+	}
+
+	# --- handlers the removed subtrees had ---
+	if ($moduleText) {
+		foreach ($r in $rmRoots) {
+			foreach ($ev in @($r.SelectNodes('descendant-or-self::*[local-name()="Events"]/*[local-name()="Event"]'))) {
+				$h = $ev.InnerText.Trim()
+				if (-not $h) { continue }
+				if ([regex]::IsMatch($moduleText, "(?im)^\s*(Процедура|Функция|Procedure|Function)\s+$([regex]::Escape($h))\s*\(")) {
+					$evOwner = $ev.ParentNode.ParentNode
+					Write-Host "[INFO] handler '$h' (event $($ev.GetAttribute('name')) of '$($evOwner.GetAttribute('name'))') stays in Module.bsl - delete it when nothing else calls it"
+				}
+			}
+		}
+	}
+
+	# --- remove ---
+	$oldCIs = @()
+	foreach ($r in $rmRoots) {
+		$cnt = @($r.SelectNodes('descendant-or-self::*[@id]')).Count
+		[void]$removedLines.Add("  - [$($r.LocalName)] $($r.GetAttribute('name')) ($cnt nodes)")
+		$oldCIs += $r.ParentNode
+		Remove-NodeWithWs $r
+	}
+	foreach ($ci in $oldCIs) { Remove-EmptyChildItems $ci }
+	foreach ($gn in @($gone.Keys)) { $script:removedNames[$gn] = $true }
+	$rootCI = $root.SelectSingleNode("f:ChildItems", $nsMgr)
+}
+
+# --- move ---
+if ($moveNames.Count -gt 0) {
+	$mv = $def.move
+	$mInto = if ($mv.into) { "$($mv.into)" } else { $null }
+	$mAfter = if ($mv.after) { "$($mv.after)" } else { $null }
+	$mBefore = if ($mv.before) { "$($mv.before)" } else { $null }
+	if (-not ($mInto -or $mAfter -or $mBefore)) { Write-Host "[ERROR] move: give into, after or before - where the elements go"; exit 1 }
+	if ($mAfter -and $mBefore) { Write-Host "[ERROR] move: 'after' and 'before' exclude each other - give one anchor"; exit 1 }
+	foreach ($an in @($mInto, $mAfter, $mBefore)) {
+		if ($an -and $script:removedNames.ContainsKey($an)) { Write-Host "[ERROR] move: '$an' is removed by this edit"; exit 1 }
+	}
+	$mvSeen = @{}
+	$mvNodes = @()
+	foreach ($mn in $moveNames) {
+		if ($mvSeen.ContainsKey($mn)) { Write-Host "[ERROR] move: '$mn' is named twice"; exit 1 }
+		$mvSeen[$mn] = $true
+		$mvNodes += (Get-ItemNode $mn 'move')
+	}
+	$mTarget = Resolve-Target $mInto $mAfter $mBefore
+	foreach ($anchor in @($mAfter, $mBefore)) {
+		if (-not $anchor) { continue }
+		if ($mvSeen.ContainsKey($anchor)) { Write-Host "[ERROR] move: the anchor '$anchor' is one of the moved elements"; exit 1 }
+		$inside = $false
+		if ($mTarget.TargetCI) {
+			foreach ($c in $mTarget.TargetCI.ChildNodes) { if ($c.NodeType -eq 'Element' -and $c.GetAttribute("name") -eq $anchor) { $inside = $true; break } }
+		}
+		if (-not $inside) { Write-Host "[ERROR] move: '$anchor' is not an item of the target container - name the container with into"; exit 1 }
+	}
+	foreach ($mnode in $mvNodes) {
+		if (Test-InSubtrees $mTarget.Owner @($mnode)) {
+			Write-Host "[ERROR] move: '$($mnode.GetAttribute('name'))' cannot go into itself or into its own descendant"
+			exit 1
+		}
+		$perr = Get-PlacementError $mTarget $mnode.LocalName $mnode.GetAttribute("name")
+		if ($perr) { Write-Host "[ERROR] move: $perr"; exit 1 }
+	}
+
+	$mCI = Ensure-TargetCI $mTarget
+	$mIndent = Get-ChildIndent $mCI
+	$oldCIs = @()
+	$oldIndents = @()
+	foreach ($mnode in $mvNodes) {
+		$oldIndents += (Get-NodeIndent $mnode)
+		$oldCIs += $mnode.ParentNode
+		Remove-NodeWithWs $mnode
+	}
+	$k = 0
+	$mAfterCur = $mAfter
+	foreach ($mnode in $mvNodes) {
+		Set-NodeIndent $mnode $oldIndents[$k] $mIndent
+		Insert-IntoContainer -container $mCI -newNode $mnode -afterName $mAfterCur -childIndent $mIndent -beforeName $mBefore
+		if ($mAfterCur) { $mAfterCur = $mnode.GetAttribute("name") }
+		$posStr = if ($mInto) { "into $mInto" } else { "" }
+		if ($mAfter) { $posStr += $(if ($posStr) { ", " } else { "" }) + "after $mAfter" }
+		if ($mBefore) { $posStr += $(if ($posStr) { ", " } else { "" }) + "before $mBefore" }
+		[void]$movedLines.Add("  > [$($mnode.LocalName)] $($mnode.GetAttribute('name')) ($posStr)")
+		$k++
+	}
+	foreach ($ci in $oldCIs) { Remove-EmptyChildItems $ci }
+	$rootCI = $root.SelectSingleNode("f:ChildItems", $nsMgr)
+}
+
 $changedLines = New-Object System.Collections.ArrayList
 $changedCount = 0
 
@@ -956,6 +1298,7 @@ if ($def.set -and @($def.set).Count -gt 0) {
 			if (-not $ename) { Write-Host "[ERROR] set item #$n names no element (and is not form: true)"; exit 1 }
 			if ($seenSet.ContainsKey($ename)) { Write-Host "[ERROR] set: element '$ename' appears twice - one item per element"; exit 1 }
 			$seenSet[$ename] = $true
+			if ($script:removedNames.ContainsKey($ename)) { Write-Host "[ERROR] set: element '$ename' is removed by this edit"; exit 1 }
 			$node = Find-Target $ename
 			if (-not $node) { Write-Host "[ERROR] set: element '$ename' not found (set works on the elements the form has before this edit)"; exit 1 }
 			$tag = $node.LocalName
@@ -1128,41 +1471,12 @@ if ($hasElems -or $hasAttrs) {
 	$owner = $null
 	$targetCI = $null
 	$mode = 'plain'   # plain | cmd (command bar, context menu, popup, button group) | table
+	$target = $null
 	if ($hasElems) {
-		$holderTags = @('UsualGroup','ColumnGroup','Pages','Page','Table','AutoCommandBar','ContextMenu','CommandBar','ButtonGroup','Popup')
-		if ($intoName) {
-			$owner = Find-Target $intoName
-			if (-not $owner) {
-				Write-Host "[ERROR] Target '$intoName' not found"
-				exit 1
-			}
-			if ($holderTags -notcontains $owner.LocalName) {
-				Write-Host "[ERROR] Target '$intoName' is <$($owner.LocalName)> and holds no elements. Possible: group, pages, page, table, command bar, context menu, popup, button group"
-				exit 1
-			}
-			$targetCI = $owner.SelectSingleNode("f:ChildItems", $nsMgr)
-		} elseif ($afterName -or $beforeName) {
-			# Find the anchor globally and use its parent as target
-			$anchorName = if ($beforeName) { $beforeName } else { $afterName }
-			$anchor = Find-Target $anchorName
-			if (-not $anchor) {
-				Write-Host "[ERROR] Element '$anchorName' not found"
-				exit 1
-			}
-			if ($anchor.ParentNode.LocalName -ne 'ChildItems') {
-				Write-Host "[ERROR] '$anchorName' is <$($anchor.LocalName)>, a part of its element, not an item of a container — name the container with into"
-				exit 1
-			}
-			$targetCI = $anchor.ParentNode
-			$owner = $targetCI.ParentNode
-		} else {
-			$owner = $root
-			$targetCI = $rootCI
-		}
-		if (-not [object]::ReferenceEquals($owner, $root)) {
-			if (@('AutoCommandBar','ContextMenu','CommandBar','ButtonGroup','Popup') -contains $owner.LocalName) { $mode = 'cmd' }
-			elseif ($owner.LocalName -eq 'Table') { $mode = 'table' }
-		}
+		$target = Resolve-Target $intoName $afterName $beforeName
+		$owner = $target.Owner
+		$targetCI = $target.TargetCI
+		$mode = $target.Mode
 	}
 
 	# --- Attributes: refusals first, they are cheap ---
@@ -1261,19 +1575,9 @@ if ($hasElems -or $hasAttrs) {
 			}
 		}
 
-		$ownerName = if ([object]::ReferenceEquals($owner, $root)) { "form" } else { $owner.GetAttribute("name") }
 		foreach ($n in $srcElems) {
-			$nName = $n.GetAttribute("name")
-			if ($mode -eq 'table' -and @('Button','ButtonGroup','Popup','CommandBar') -contains $n.LocalName) {
-				$tableBar = $owner.SelectSingleNode("f:AutoCommandBar", $nsMgr)
-				$hint = if ($tableBar) { "use into: `"$($tableBar.GetAttribute('name'))`"" } else { "the table has no command bar of its own" }
-				Write-Host "[ERROR] '$nName' is <$($n.LocalName)>: the ChildItems of table '$ownerName' hold its columns, buttons go to its command bar — $hint"
-				exit 1
-			}
-			if ($mode -eq 'cmd' -and @('Button','ButtonGroup','Popup') -notcontains $n.LocalName) {
-				Write-Host "[ERROR] '$nName' is <$($n.LocalName)>: '$ownerName' takes buttons, button groups and popups only"
-				exit 1
-			}
+			$perr = Get-PlacementError $target $n.LocalName $n.GetAttribute("name")
+			if ($perr) { Write-Host "[ERROR] $perr"; exit 1 }
 		}
 
 		# Имена элементов уникальны (требование 1С; дубль = битый XML, форма не откроется): против всех
@@ -1302,27 +1606,7 @@ if ($hasElems -or $hasAttrs) {
 
 	# --- Elements: target container, ids, indent, insertion ---
 	if ($hasElems -and $srcElems.Count -gt 0) {
-		if (-not $targetCI) {
-			if ([object]::ReferenceEquals($owner, $root)) {
-				# Create ChildItems section in form — insert after Events or AutoCommandBar
-				$targetCI = $xmlDoc.CreateElement("ChildItems", $formNs)
-				$insertAfter = $root.SelectSingleNode("f:Events", $nsMgr)
-				if (-not $insertAfter) { $insertAfter = $root.SelectSingleNode("f:AutoCommandBar", $nsMgr) }
-				if ($insertAfter) {
-					$refNode = $insertAfter.NextSibling
-					$ws = $xmlDoc.CreateWhitespace("`r`n`t")
-					$root.InsertBefore($ws, $refNode) | Out-Null
-					$root.InsertBefore($targetCI, $refNode) | Out-Null
-				} else {
-					$root.AppendChild($xmlDoc.CreateWhitespace("`r`n`t")) | Out-Null
-					$root.AppendChild($targetCI) | Out-Null
-				}
-				# Also update $rootCI reference
-				$rootCI = $targetCI
-			} else {
-				$targetCI = Ensure-ChildItems $owner
-			}
-		}
+		if (-not $targetCI) { $targetCI = Ensure-TargetCI $target }
 		$childIndent = Get-ChildIndent $targetCI
 
 		$importedNodes = @()
@@ -1638,6 +1922,18 @@ if ($script:isExtension) {
 	Write-Host ""
 }
 
+if ($removedLines.Count -gt 0) {
+	Write-Host "Removed:"
+	foreach ($line in $removedLines) { Write-Host $line }
+	Write-Host ""
+}
+
+if ($movedLines.Count -gt 0) {
+	Write-Host "Moved:"
+	foreach ($line in $movedLines) { Write-Host $line }
+	Write-Host ""
+}
+
 if ($changedLines.Count -gt 0) {
 	Write-Host "Changed:"
 	foreach ($line in $changedLines) { Write-Host $line }
@@ -1681,6 +1977,8 @@ if ($addedCmds.Count -gt 0) {
 
 Write-Host "---"
 $totalParts = @()
+if ($removedLines.Count -gt 0) { $totalParts += "$($removedLines.Count) removed element(s)" }
+if ($movedLines.Count -gt 0) { $totalParts += "$($movedLines.Count) moved element(s)" }
 if ($changedCount -gt 0) { $totalParts += "$changedCount changed element(s)" }
 if ($addedFormEvents.Count -gt 0) { $totalParts += "$($addedFormEvents.Count) form event(s)" }
 if ($addedElemEvents.Count -gt 0) { $totalParts += "$($addedElemEvents.Count) element event(s)" }

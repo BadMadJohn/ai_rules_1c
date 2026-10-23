@@ -198,9 +198,9 @@ Only when `form-compile` reports an unknown key or rejects a construct — open 
 
 ---
 
-## 4. Edit — Add Elements, Attributes, Commands
+## 4. Edit — Add, Change, Move, Remove
 
-Adds elements, attributes, and/or commands to an existing Form.xml, and changes properties and events of existing elements and of the form (`set`). Automatically allocates IDs from the correct pool, generates companion elements (ContextMenu, ExtendedTooltip, etc.) and event handlers.
+Adds elements, attributes, and/or commands to an existing Form.xml, changes properties and events of existing elements and of the form (`set`), moves (`move`) and removes (`remove`) existing elements. Automatically allocates IDs from the correct pool, generates companion elements (ContextMenu, ExtendedTooltip, etc.) and event handlers.
 
 Elements and attributes are compiled by `1c-form-compile`: `form-edit` writes the new items into a temporary DSL, compiles it, takes the generated nodes, gives them fresh IDs from the free pools of the form and inserts them with the indent of their container. Every key `form-compile` understands works here, and its warnings (`unknown key ... ignored`, unrecognized enum values) are shown as they are. Commands, `formEvents` and `elementEvents` are written by `form-edit` itself.
 
@@ -274,7 +274,7 @@ Behaviour of the compiler that `form-edit` now shares: an element without `title
 ] }
 ```
 
-- `element` names an existing element of the element tree (also one inside a command bar, a popup, a button group). Its DSL type comes from the XML tag: `InputField` → `input`, `CheckBoxField` → `check`, `RadioButtonField` → `radio`, `LabelDecoration` → `label`, `LabelField` → `labelField`, `PictureDecoration` → `picture`, `PictureField` → `picField`, `CalendarField` → `calendar`, `Table`, `UsualGroup` → `group`, `ColumnGroup`, `Pages`, `Page`, `Button`, `ButtonGroup`, `CommandBar` → `cmdBar`, `Popup`. Other tags (and the companions: context menu, extended tooltip, a table's command bar and additions) are refused: `set does not support <Tag> yet`. An element is named once per `set`; the name must exist before this edit — `set` runs first, so it cannot reach an element added by the same JSON.
+- `element` names an existing element of the element tree (also one inside a command bar, a popup, a button group). Its DSL type comes from the XML tag: `InputField` → `input`, `CheckBoxField` → `check`, `RadioButtonField` → `radio`, `LabelDecoration` → `label`, `LabelField` → `labelField`, `PictureDecoration` → `picture`, `PictureField` → `picField`, `CalendarField` → `calendar`, `Table`, `UsualGroup` → `group`, `ColumnGroup`, `Pages`, `Page`, `Button`, `ButtonGroup`, `CommandBar` → `cmdBar`, `Popup`. Other tags (and the companions: context menu, extended tooltip, a table's command bar and additions) are refused: `set does not support <Tag> yet`. An element is named once per `set`; the name must exist after `remove` and `move` and before the additions of this edit — `set` cannot reach an element added by the same JSON.
 - Every other key of the item is a DSL key of `form-compile` for that type ([`form-compile-dsl.md`](form-compile-dsl.md)). `form-edit` compiles `{ <type>: <name>, <keys> }` (with `title: ""` when the item has no `title`, so no title is derived) and takes the property nodes: each replaces the node of the same tag, or is inserted at its schema position. A key that names no property of that tag (`unknown key`), and the keys that change structure (`children`, `columns`, `name`, `contextMenu`, `extendedTooltip`, `commandBar`, `tableAutofill`, `additions`, `displayImportance`, `events`, the type keys of other elements) are refused before anything is written. English DSL keys only; `path` sets `DataPath`.
 - **Removal:** a key with `null`, `[]` or `{}` removes the property; a property that is not there is an info line. A value the compiler treats as the default writes nothing, and then the existing property goes too (`visible: true` removes `Visible`, `title: ""` removes `Title`).
 - **Block keys** (`choiceParameters`, `choiceParameterLinks`, `choiceList`, `typeLink`, `format`, `editFormat`, `tooltip`, ...) replace the whole block: there is no item-level add / remove, `choiceList` must list all items.
@@ -282,6 +282,33 @@ Behaviour of the compiler that `form-edit` now shares: an element without `title
 - `on`: a string is an event with the handler name `form-compile` derives (`<Element><Event suffix>`), an object is `{ "event": ..., "handler"?: ..., "callType"?: ... }`. An event of the same name **and** callType is replaced, the others are appended; `<Events>` is created at its position. `off`: names or `{ "event", "callType"? }`; without `callType` every event of that name goes; an emptied `<Events>` is removed. An unknown event name is `form-compile`'s refusal. The same event cannot be in `on` and `off` of one item.
 - **Form item** (`"form": true`): `title` → the form's `<Title>`; `properties` → form properties (`form-compile`'s `properties`: `autoTitle`, `windowOpeningMode`, `commandBarLocation`, ... PascalCase tags; `null` or `""` removes one); `on` / `off` act on the form's `<Events>`. A form event needs an explicit `handler` (a string entry is refused: the form has no handler naming rule). `formEvents` keeps working as before.
 - Output: a `Changed:` section, one line per element: `~ [InputField] Contractor: +ChoiceButton, ~Title, -ClearButton, +event StartChoice, -event OnChange`.
+
+### Moving elements — `move`
+
+```json
+{ "move": { "elements": ["Passed", "OverMonthPlan"], "into": "ControlPage", "before": "Comment" } }
+```
+
+The named elements go, with their whole subtree and their ids, to the place given by `into` / `after` / `before` — resolved and checked as for new elements (a button cannot go into the `ChildItems` of a table, only buttons go into a command bar; give at least one of the three). The moved subtree is re-indented to its new depth, the whitespace it leaves behind goes with it (no blank line), and a `ChildItems` that is left empty is removed, as the platform writes a group without children. Refused before anything is written: an element not found or only a part of another one (a companion), an element named twice, `after` together with `before`, an anchor that is not an item of the target container, a move into the element itself or into its own descendant, an element that is also in `remove`.
+
+### Removing elements — `remove`
+
+```json
+{ "remove": ["AdditionalProcessing"], "force": false }
+```
+
+Each element is removed with its subtree (companions, columns, nested items) and the whitespace before it; an emptied `ChildItems` goes too (a command bar left without items becomes a self-closing tag). Nothing else changes: ids are not reused, the element's attribute and the commands stay. A removal that something still refers to is refused with `[ERROR] '<Name>' is referenced by ...` (nothing is written); `"force": true` removes anyway and prints a `[WARN]` per reference. What counts as a reference, outside the removed subtrees:
+
+- `AdditionSource/Item` equal to the name (the search / status / control additions of another table);
+- a `CommandName` containing `Form.Item.<Name>.` (a button of a standard command of the table);
+- `AssociatedTableElementId` of a command equal to the name;
+- the `field` of the form's `ConditionalAppearance` selection (`Attributes/ConditionalAppearance/.../dcsset:selection/dcsset:item/dcsset:field`) equal to the name;
+- any text containing `Items.<Name>.` or ending with `Items.<Name>` (the `DataPath`, `TitleDataPath`, `RowPictureDataPath`, `FooterDataPath`, `TypeLink` of other elements, e.g. `Items.List.CurrentData.Field`);
+- the form module `Ext/Form/Module.bsl` next to `Form.xml`: `Items.<Name>` / `Элементы.<Name>` (any case), outside comments and string literals (multi-line strings included), as a whole word.
+
+The `DataPath` of the removed element itself is not a reference. After a removal `form-edit` prints `[INFO]` for every event handler of the removed subtree that is still a procedure or function in `Module.bsl`: the `Events` and the commands' `Action`s are not touched, delete the handler by hand when nothing else calls it.
+
+**Order of one JSON:** `remove`, `move`, `set`, then the additions (`elements`, `attributes`, `commands`, `formEvents`, `elementEvents`). Each step sees the result of the previous one; `set` on a removed element and the same element in `remove` and `move` are refused.
 
 ### Output
 

@@ -1693,6 +1693,170 @@ Register-Case 'form-edit: set keeps BOM and EOL of an LF and a CRLF form' {
     }
 }
 
+# ---------------------------------------------------------------- form-edit move and remove
+
+function Get-ElementIdMap($Facts) {
+    $map = @{}
+    foreach ($n in (Get-FormNodes $Facts '/f:Form/f:AutoCommandBar | /f:Form/f:ChildItems//*[@id]')) { $map[$n.GetAttribute('name')] = [int]$n.GetAttribute('id') }
+    return $map
+}
+
+# The subtree of a named element without its indentation.
+function Get-FlatXml($Facts, [string]$XPath) {
+    $node = (Get-FormNodes $Facts $XPath)[0]
+    return ([regex]::Replace($node.OuterXml, '>\s+<', '><'))
+}
+
+function Initialize-NestedGroups([string]$Work, [string]$Eol = "`n") {
+    $target = Initialize-FormEditCase $Work $Eol
+    $run = Invoke-FormEditDef $Work $target 'add-nested-groups.json'
+    Assert-Equal 0 $run.ExitCode "add-nested-groups (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    return $target
+}
+
+Register-Case 'form-edit: move puts fields into another group with their ids, re-indented, and drops the emptied ChildItems' {
+    param($work)
+    $target = Initialize-NestedGroups $work
+    $before = Get-FileFacts $target
+    $def = (Read-JsonFixture 'form-edit\defs\move-fields.json').move
+    $source = (Read-JsonFixture 'form-edit\defs\input-keys.json').into
+    $beforeXml = @{}
+    foreach ($n in $def.elements) { $beforeXml[$n] = Get-FlatXml $before "//f:InputField[@name='$n']" }
+    $run = Invoke-FormEditDef $work $target 'move-fields.json'
+    Assert-Equal 0 $run.ExitCode "form-edit (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    Assert-True ($run.StdOut -match '(?m)^Moved:') 'no Moved section'
+    $after = Get-FileFacts $target
+    Assert-StyleKept $before $after 'move'
+    $idsBefore = Get-ElementIdMap $before
+    $idsAfter = Get-ElementIdMap $after
+    Assert-Equal $idsBefore.Count $idsAfter.Count 'number of named nodes'
+    foreach ($k in $idsBefore.Keys) { Assert-Equal $idsBefore[$k] $idsAfter[$k] "id of $k" }
+    foreach ($n in $def.elements) {
+        Assert-Equal $beforeXml[$n] (Get-FlatXml $after "//f:InputField[@name='$n']") "subtree of $n"
+        Assert-Equal 1 (Get-FormNodes $after "//f:UsualGroup[@name='$($def.into)']/f:ChildItems/f:InputField[@name='$n']").Count "$n in the target group"
+        $line = @($after.Lines | Where-Object { $_.Trim().StartsWith("<InputField name=`"$n`"") })[0]
+        Assert-Equal 6 ($line.Length - $line.TrimStart("`t").Length) "indent of $n"
+    }
+    Assert-Equal 'Group,ExtendedTooltip' (Get-ChildTags $after "//f:UsualGroup[@name='$source']") 'the emptied group has no ChildItems'
+    $movedNames = @((Get-FormNodes $after "//f:UsualGroup[@name='$($def.into)']/f:ChildItems/f:InputField") | ForEach-Object { $_.GetAttribute('name') })
+    Assert-Equal "$($def.elements[0]),$($def.elements[1])" ($movedNames -join ',') 'order kept'
+    Assert-NoBlankLines $after 'move'
+    Assert-FormValid $target 'move'
+}
+
+Register-Case 'form-edit: move before an anchor reorders inside a container' {
+    param($work)
+    $target = Initialize-FormEditCase $work
+    $before = Get-FileFacts $target
+    $def = (Read-JsonFixture 'form-edit\defs\move-before.json').move
+    $run = Invoke-FormEditDef $work $target 'move-before.json'
+    Assert-Equal 0 $run.ExitCode "form-edit (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    $after = Get-FileFacts $target
+    Assert-StyleKept $before $after 'move before'
+    $names = @((Get-FormNodes $after "//f:UsualGroup[@name='$((Read-JsonFixture 'form-edit\defs\input-keys.json').into)']/f:ChildItems/f:InputField") | ForEach-Object { $_.GetAttribute('name') })
+    Assert-Equal "$($def.elements[0]),$($def.before)" ($names -join ',') 'order after the move'
+    $idsBefore = Get-ElementIdMap $before
+    $idsAfter = Get-ElementIdMap $after
+    foreach ($k in $idsBefore.Keys) { Assert-Equal $idsBefore[$k] $idsAfter[$k] "id of $k" }
+    Assert-Equal $before.Lines.Count $after.Lines.Count 'line count'
+    Assert-NoBlankLines $after 'move before'
+    Assert-FormValid $target 'move before'
+}
+
+Register-Case 'form-edit: move refuses its own descendant, two anchors, a foreign anchor, a twice named element, a button into a table, remove plus move' {
+    param($work)
+    $target = Initialize-NestedGroups $work
+    $btn = Invoke-FormEditDef $work $target 'add-button-ref.json'
+    Assert-Equal 0 $btn.ExitCode "add-button-ref (stdout: $($btn.StdOut) stderr: $($btn.StdErr))"
+    $before = Get-FileFacts $target
+    foreach ($def in @('move-into-descendant.json', 'move-both-anchors.json', 'move-anchor-elsewhere.json', 'move-twice.json', 'move-button-into-table.json', 'remove-and-move.json')) {
+        $run = Invoke-FormEditDef $work $target $def
+        Assert-Equal 1 $run.ExitCode "$def must be refused (stdout: $($run.StdOut))"
+        Assert-True ($run.StdOut -match '\[ERROR\]') "$def : no error message"
+        Assert-Equal $before.Text (Get-FileFacts $target).Text "$def : the form changed"
+    }
+}
+
+Register-Case 'form-edit: remove takes an element with its companions and nothing else, info on a handler left in the module' {
+    param($work)
+    $target = Initialize-FormEditCase $work
+    $ev = Invoke-FormEditDef $work $target 'set-date-event.json'
+    Assert-Equal 0 $ev.ExitCode "set-date-event (stdout: $($ev.StdOut) stderr: $($ev.StdErr))"
+    $before = Get-FileFacts $target
+    $name = (Read-JsonFixture 'form-edit\defs\remove-date.json').remove[0]
+    $handler = (Read-JsonFixture 'form-edit\defs\set-date-event.json').set[0].on[0].handler
+    $run = Invoke-FormEditDef $work $target 'remove-date.json'
+    Assert-Equal 0 $run.ExitCode "form-edit (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    Assert-True ($run.StdOut -match '(?m)^Removed:') 'no Removed section'
+    Assert-True ($run.StdOut.Contains($handler)) "no info about the handler $handler : $($run.StdOut)"
+    $after = Get-FileFacts $target
+    Assert-StyleKept $before $after 'remove'
+    $idsBefore = Get-ElementIdMap $before
+    $idsAfter = Get-ElementIdMap $after
+    $gone = @($idsBefore.Keys | Where-Object { -not $idsAfter.ContainsKey($_) })
+    Assert-Equal 3 $gone.Count "nodes that left: $($gone -join ',')"
+    Assert-True ($gone -contains $name) 'the element left'
+    foreach ($k in $idsAfter.Keys) { Assert-Equal $idsBefore[$k] $idsAfter[$k] "id of $k" }
+    $delta = Get-LineDelta $before $after
+    Assert-Equal 0 @($delta.Added).Count "lines added by a removal: $(@($delta.Added) -join ' | ')"
+    Assert-True (@($delta.Removed).Count -gt 0) 'nothing was removed'
+    Assert-NoBlankLines $after 'remove'
+    Assert-FormValid $target 'remove'
+}
+
+Register-Case 'form-edit: remove refuses an element that is still referenced, force removes it with warnings' {
+    param($work)
+    $target = Initialize-FormEditCase $work
+    $btn = Invoke-FormEditDef $work $target 'add-button-ref.json'
+    Assert-Equal 0 $btn.ExitCode "add-button-ref (stdout: $($btn.StdOut) stderr: $($btn.StdErr))"
+    $before = Get-FileFacts $target
+
+    # the table is referenced by a StandardCommand button and by the data path of that button
+    $run = Invoke-FormEditDef $work $target 'remove-table.json'
+    Assert-Equal 1 $run.ExitCode "table removal must be refused (stdout: $($run.StdOut))"
+    $table = (Read-JsonFixture 'form-edit\defs\remove-table.json').remove[0]
+    Assert-True ($run.StdOut -match 'is referenced by.*CommandName') "no reference by the command: $($run.StdOut)"
+    Assert-True ($run.StdOut -match 'is referenced by.*DataPath') "no reference by the data path: $($run.StdOut)"
+    Assert-Equal $before.Text (Get-FileFacts $target).Text 'the form changed on a refusal'
+
+    # the module uses the field outside a comment and a string
+    $run = Invoke-FormEditDef $work $target 'remove-number.json'
+    Assert-Equal 1 $run.ExitCode "number removal must be refused (stdout: $($run.StdOut))"
+    Assert-True ($run.StdOut -match 'Module.bsl line 11') "no reference by the module: $($run.StdOut)"
+    Assert-Equal $before.Text (Get-FileFacts $target).Text 'the form changed on a refusal'
+
+    # a mention in a comment and in a string literal (two lines) is not a use
+    $run = Invoke-FormEditDef $work $target 'remove-date.json'
+    Assert-Equal 0 $run.ExitCode "date removal (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+
+    $run = Invoke-FormEditDef $work $target 'remove-table-force.json'
+    Assert-Equal 0 $run.ExitCode "forced removal (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    Assert-True ($run.StdOut -match '\[WARN\].*is referenced by') "no warning on force: $($run.StdOut)"
+    $after = Get-FileFacts $target
+    Assert-Equal 0 (Get-FormNodes $after "//f:Table[@name='$table']").Count 'table removed'
+    Assert-Equal 0 (Get-FormNodes $after "//*[starts-with(@name, '$table')]").Count 'companions removed'
+    Assert-NoBlankLines $after 'forced remove'
+}
+
+Register-Case 'form-edit: move and remove keep BOM and EOL of an LF and a CRLF form' {
+    param($work)
+    foreach ($eol in @("`n", "`r`n")) {
+        $dir = Join-Path $work $(if ($eol -eq "`n") { 'lf' } else { 'crlf' })
+        $target = Initialize-NestedGroups $dir $eol
+        $before = Get-FileFacts $target
+        $run = Invoke-FormEditDef $dir $target 'move-fields.json'
+        Assert-Equal 0 $run.ExitCode "move (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+        $mid = Get-FileFacts $target
+        Assert-StyleKept $before $mid 'move' $eol
+        Assert-Equal 0 (Get-FormNodes $mid "//f:UsualGroup[@name='$((Read-JsonFixture 'form-edit/defs/input-keys.json').into)']/f:ChildItems").Count 'the moved fields left their group'
+        $run = Invoke-FormEditDef $dir $target 'remove-date.json'
+        Assert-Equal 0 $run.ExitCode "remove (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+        $last = Get-FileFacts $target
+        Assert-StyleKept $mid $last 'remove' $eol
+        Assert-Equal 0 (Get-FormNodes $last "//*[@name='$((Read-JsonFixture 'form-edit/defs/remove-date.json').remove[0])']").Count 'the element is gone'
+    }
+}
+
 function Assert-CompactXml([string]$Path) {
     $facts = Get-FileFacts $Path
     [xml]$parsed = $facts.Text
