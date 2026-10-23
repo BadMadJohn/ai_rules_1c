@@ -200,7 +200,7 @@ Only when `form-compile` reports an unknown key or rejects a construct — open 
 
 ## 4. Edit — Add Elements, Attributes, Commands
 
-Adds elements, attributes, and/or commands to an existing Form.xml. Automatically allocates IDs from the correct pool, generates companion elements (ContextMenu, ExtendedTooltip, etc.) and event handlers.
+Adds elements, attributes, and/or commands to an existing Form.xml, and changes properties and events of existing elements and of the form (`set`). Automatically allocates IDs from the correct pool, generates companion elements (ContextMenu, ExtendedTooltip, etc.) and event handlers.
 
 Elements and attributes are compiled by `1c-form-compile`: `form-edit` writes the new items into a temporary DSL, compiles it, takes the generated nodes, gives them fresh IDs from the free pools of the form and inserts them with the indent of their container. Every key `form-compile` understands works here, and its warnings (`unknown key ... ignored`, unrecognized enum values) are shown as they are. Commands, `formEvents` and `elementEvents` are written by `form-edit` itself.
 
@@ -259,6 +259,29 @@ Same DSL as `1c-form-compile` — element keys, `command` / `stdCommand`, event 
 A `DynamicList` attribute **must** carry `settings.mainTable` and/or `settings.query`. Without a source the designer accepts the XML, but the form fails to open (`Основная таблица динамического списка задана неверно`). `form-edit` refuses that JSON before writing; `form-validate` reports the same gap on an existing form. The `settings` keys are the ones in [`form-compile-dsl.md`](form-compile-dsl.md); the attribute is written by `form-compile`, so filters / order / conditional appearance come out as they do there.
 
 Behaviour of the compiler that `form-edit` now shares: an element without `title` gets a title derived from its name (`title: ""` suppresses it), an attribute likewise; explicit `false` / `true` values (`showTitle`, `autoMaxWidth`, ...) are written as given; an unknown event name is a refusal, not a warning. `form-compile` infers a main attribute from a single object-like attribute; `form-edit` turns that off (`main: false` unless the attribute has its own `main` key), the form being edited has its own. A table bound to a `DynamicList` attribute that already exists in the form gets the list-table defaults of `form-compile`.
+
+### Changing properties and events of existing elements — `set`
+
+`set` changes what an element or the form already has; it never touches the element's id, companions or `ChildItems`.
+
+```json
+{ "set": [
+  { "element": "Contractor", "choiceButton": true, "clearButton": true, "on": ["StartChoice"], "off": ["OnChange"] },
+  { "element": "Agreement", "choiceParameterLinks": [] },
+  { "element": "Basis", "on": ["AfterDeleteRow", { "event": "BeforeAddRow", "handler": "BasisBeforeAddRow", "callType": "Before" }] },
+  { "form": true, "title": "Customer order", "properties": { "autoTitle": false },
+    "on": [ { "event": "ChoiceProcessing", "handler": "ChoiceProcessing" } ], "off": ["OnOpen"] }
+] }
+```
+
+- `element` names an existing element of the element tree (also one inside a command bar, a popup, a button group). Its DSL type comes from the XML tag: `InputField` → `input`, `CheckBoxField` → `check`, `RadioButtonField` → `radio`, `LabelDecoration` → `label`, `LabelField` → `labelField`, `PictureDecoration` → `picture`, `PictureField` → `picField`, `CalendarField` → `calendar`, `Table`, `UsualGroup` → `group`, `ColumnGroup`, `Pages`, `Page`, `Button`, `ButtonGroup`, `CommandBar` → `cmdBar`, `Popup`. Other tags (and the companions: context menu, extended tooltip, a table's command bar and additions) are refused: `set does not support <Tag> yet`. An element is named once per `set`; the name must exist before this edit — `set` runs first, so it cannot reach an element added by the same JSON.
+- Every other key of the item is a DSL key of `form-compile` for that type ([`form-compile-dsl.md`](form-compile-dsl.md)). `form-edit` compiles `{ <type>: <name>, <keys> }` (with `title: ""` when the item has no `title`, so no title is derived) and takes the property nodes: each replaces the node of the same tag, or is inserted at its schema position. A key that names no property of that tag (`unknown key`), and the keys that change structure (`children`, `columns`, `name`, `contextMenu`, `extendedTooltip`, `commandBar`, `tableAutofill`, `additions`, `displayImportance`, `events`, the type keys of other elements) are refused before anything is written. English DSL keys only; `path` sets `DataPath`.
+- **Removal:** a key with `null`, `[]` or `{}` removes the property; a property that is not there is an info line. A value the compiler treats as the default writes nothing, and then the existing property goes too (`visible: true` removes `Visible`, `title: ""` removes `Title`).
+- **Block keys** (`choiceParameters`, `choiceParameterLinks`, `choiceList`, `typeLink`, `format`, `editFormat`, `tooltip`, ...) replace the whole block: there is no item-level add / remove, `choiceList` must list all items.
+- **Schema position.** The platform keeps one child order per element; there is no XSD in the repository, so the order is derived from the vendor dumps (every `Form.xml` under the 1C projects: 29727 files, 14917 distinct, 473382 elements of the supported tags plus the form roots) and sits in `form-edit.ps1` as a table, one line per tag. A property is inserted before the first child of a greater rank; a tag missing from the table goes before the companions / `ChildItems` / `Events` with a `[WARN]`.
+- `on`: a string is an event with the handler name `form-compile` derives (`<Element><Event suffix>`), an object is `{ "event": ..., "handler"?: ..., "callType"?: ... }`. An event of the same name **and** callType is replaced, the others are appended; `<Events>` is created at its position. `off`: names or `{ "event", "callType"? }`; without `callType` every event of that name goes; an emptied `<Events>` is removed. An unknown event name is `form-compile`'s refusal. The same event cannot be in `on` and `off` of one item.
+- **Form item** (`"form": true`): `title` → the form's `<Title>`; `properties` → form properties (`form-compile`'s `properties`: `autoTitle`, `windowOpeningMode`, `commandBarLocation`, ... PascalCase tags; `null` or `""` removes one); `on` / `off` act on the form's `<Events>`. A form event needs an explicit `handler` (a string entry is refused: the form has no handler naming rule). `formEvents` keeps working as before.
+- Output: a `Changed:` section, one line per element: `~ [InputField] Contractor: +ChoiceButton, ~Title, -ClearButton, +event StartChoice, -event OnChange`.
 
 ### Output
 

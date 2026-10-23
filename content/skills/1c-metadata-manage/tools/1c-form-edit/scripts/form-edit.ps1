@@ -1,4 +1,4 @@
-﻿# form-edit v1.7 — Edit 1C managed form elements
+﻿# form-edit v1.8 — Edit 1C managed form elements
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 # Local: DynamicList attributes require settings.mainTable or settings.query
 # and emit <Settings xsi:type="DynamicList">. An attribute without a source
@@ -17,6 +17,10 @@
 # also takes a command bar, context menu, popup or button group (a table's, an
 # element's, the form's own AutoCommandBar). A button in the ChildItems of a Table
 # is refused - its columns live there, the buttons go to the table's command bar.
+# Local (v1.8): `set` changes properties and events of existing elements and of the form
+# (a property is compiled by form-compile and replaces / is inserted by the child order the
+# vendor dumps show; null / [] / {} removes it); it runs before the additions and only sees the
+# elements the form had before this edit.
 param(
 	[Parameter(Mandatory)]
 	[Alias('Path')]
@@ -647,6 +651,461 @@ function Get-TablePaths($els, [hashtable]$acc) {
 	}
 }
 
+# === 9c. set: properties and events of existing elements and of the form ===
+
+# Child order of the elements, derived from the vendor dumps (scan of every Form.xml under
+# the 1C projects: 29727 files, 14917 distinct, 473382 elements of these tags plus the
+# 14917 <Form> roots): for every parent tag the pairwise precedence of its child tags
+# was counted, the majority direction became an edge, a topological sort gave the list,
+# ties and tags that never meet come out by their mean relative position. The platform
+# tolerates some variation, the majority order is what the Configurator writes.
+# A property that has to be inserted goes before the first child of a greater rank.
+$script:childRank = @{
+	'Form' = 'Scale,Title,Width,Height,WindowOpeningMode,EnterKeyBehavior,AutoSaveDataInSettings,SaveDataInSettings,SettingsStorage,AutoTitle,HorizontalSpacing,HorizontalAlign,VerticalAlign,AutoURL,Group,ChildItemsWidth,VerticalSpacing,AutoFillCheck,Customizable,Enabled,CommandBarLocation,VerticalScroll,ScalingMode,ConversationsRepresentation,MobileDeviceCommandBarContent,CommandSet,AutoTime,GroupList,UsePostingMode,ReportResult,RepostOnWrite,DetailsData,ShowTitle,UseForFoldersAndItems,ReportFormType,ShowCloseButton,VariantAppearance,AutoShowState,CustomSettingsFolder,ReportResultViewMode,CollapseItemsByImportanceVariant,ViewModeApplicationOnSetReportResult,AutoCommandBar,Events,ChildItems,Attributes,Commands,Parameters,BaseForm,CommandInterface'
+	'InputField' = 'DataPath,Visible,UserVisible,Enabled,DefaultItem,ReadOnly,SkipOnInput,Title,TitleTextColor,TitleBackColor,TitleFont,TitleLocation,TitleHeight,ToolTip,ToolTipRepresentation,WarningOnEditRepresentation,WarningOnEdit,Shortcut,HorizontalAlign,GroupHorizontalAlign,GroupVerticalAlign,VerticalAlign,EditMode,FooterBackColor,FixingInTable,CellHyperlink,AutoCellHeight,ShowInHeader,HeaderPicture,HeaderHorizontalAlign,FooterDataPath,FooterTextColor,FooterText,FooterFont,ShowInFooter,FooterHorizontalAlign,FooterPicture,Width,AutoMaxWidth,MaxWidth,Height,AutoMaxHeight,MaxHeight,HorizontalStretch,AllowInputEmptyMultipleValues,VerticalStretch,Wrap,PasswordMode,MultiLine,ExtendedEdit,DropListButton,ChoiceButton,ChoiceButtonRepresentation,ClearButton,SpinButton,MarkNegatives,OpenButton,Mask,CreateButton,ListChoiceMode,AutoChoiceIncomplete,ExtendedEditMultipleValues,QuickChoice,ChoiceFoldersAndItems,Format,EditFormat,AutoMarkIncomplete,ChooseType,IncompleteChoiceMode,TypeDomainEnabled,TextEdit,MinValue,ChoiceForm,EditTextUpdate,MaxValue,ChoiceParameterLinks,ChoiceParameters,ChoiceButtonPicture,ChoiceList,AutoCorrectionOnTextInput,AutoShowOpenButtonMode,AvailableTypes,ChoiceListButton,TextColor,ChoiceListHeight,DropListWidth,BackColor,TypeLink,BorderColor,Font,SpecialTextInputMode,InputHint,ChoiceHistoryOnInput,SpellCheckingOnTextInput,HeightControlVariant,AutoShowClearButtonMode,ContextMenu,ExtendedTooltip,Events'
+	'CheckBoxField' = 'DataPath,Visible,UserVisible,Enabled,ReadOnly,SkipOnInput,DefaultItem,Title,TitleTextColor,TitleBackColor,TitleFont,TitleLocation,TitleHeight,ToolTip,HorizontalAlign,FooterHorizontalAlign,CellHyperlink,ToolTipRepresentation,GroupHorizontalAlign,WarningOnEditRepresentation,VerticalAlign,GroupVerticalAlign,EditMode,ShowInHeader,FooterDataPath,FixingInTable,WarningOnEdit,HeaderPicture,ShowInFooter,ThreeState,HeaderHorizontalAlign,CheckBoxType,EditFormat,BackColor,ItemTitleHeight,ItemHeight,EqualItemsWidth,ContextMenu,ExtendedTooltip,Events'
+	'RadioButtonField' = 'DataPath,Visible,DefaultItem,Enabled,SkipOnInput,ReadOnly,Title,UserVisible,TitleTextColor,TitleFont,TitleLocation,TitleHeight,ToolTip,Shortcut,HorizontalAlign,ToolTipRepresentation,WarningOnEditRepresentation,EditMode,VerticalAlign,GroupHorizontalAlign,GroupVerticalAlign,WarningOnEdit,FooterHorizontalAlign,RadioButtonType,ItemWidth,ItemHeight,ItemTitleHeight,ColumnsCount,EqualColumnsWidth,ChoiceList,BorderColor,Font,ContextMenu,ExtendedTooltip,Events'
+	'LabelDecoration' = 'UserVisible,Visible,Enabled,Width,AutoMaxWidth,MaxWidth,Height,AutoMaxHeight,MaxHeight,HorizontalStretch,VerticalStretch,SkipOnInput,TextColor,Font,Title,ToolTip,ToolTipRepresentation,GroupHorizontalAlign,GroupVerticalAlign,Hyperlink,HorizontalAlign,VerticalAlign,TitleHeight,BackColor,BorderColor,Border,ContextMenu,ExtendedTooltip,Events'
+	'LabelField' = 'DataPath,Visible,Enabled,UserVisible,DefaultItem,ReadOnly,SkipOnInput,Title,TitleTextColor,WarningOnEditRepresentation,TitleBackColor,TitleFont,TitleLocation,TitleHeight,Shortcut,ToolTip,ToolTipRepresentation,HorizontalAlign,VerticalAlign,GroupHorizontalAlign,EditMode,FixingInTable,CellHyperlink,AutoCellHeight,ShowInHeader,FooterText,ShowInFooter,HeaderPicture,HeaderHorizontalAlign,FooterDataPath,FooterHorizontalAlign,GroupVerticalAlign,Width,AutoMaxWidth,MaxWidth,Height,AutoMaxHeight,MaxHeight,HorizontalStretch,MarkNegatives,VerticalStretch,Format,Hiperlink,Border,BorderColor,PasswordMode,TextColor,BackColor,Font,ContextMenu,ExtendedTooltip,Events'
+	'PictureDecoration' = 'Visible,Enabled,Width,AutoMaxWidth,MaxWidth,Height,AutoMaxHeight,MaxHeight,HorizontalStretch,VerticalStretch,SkipOnInput,TextColor,Font,Title,ToolTip,ToolTipRepresentation,GroupHorizontalAlign,GroupVerticalAlign,Hyperlink,PictureSize,Zoomable,ImageScale,NonselectedPictureText,Picture,BorderColor,Border,FileDragMode,ContextMenu,ExtendedTooltip,Events'
+	'PictureField' = 'DataPath,Visible,UserVisible,ReadOnly,SkipOnInput,Title,TitleTextColor,TitleBackColor,Enabled,TitleFont,TitleLocation,TitleHeight,GroupHorizontalAlign,WarningOnEditRepresentation,ToolTip,GroupVerticalAlign,ToolTipRepresentation,HorizontalAlign,EditMode,FixingInTable,CellHyperlink,ShowInHeader,Shortcut,HeaderPicture,HeaderHorizontalAlign,AutoCellHeight,ShowInFooter,FooterHorizontalAlign,Width,AutoMaxWidth,Height,AutoMaxHeight,FooterDataPath,FooterText,MaxWidth,MaxHeight,HorizontalStretch,VerticalStretch,PictureSize,Zoomable,Hyperlink,NonselectedPictureText,EnableDrag,ValuesPicture,TextColor,Font,BorderColor,Border,FileDragMode,ContextMenu,ExtendedTooltip,Events'
+	'CalendarField' = 'DataPath,DefaultItem,Title,TitleLocation,ToolTip,SkipOnInput,ToolTipRepresentation,Width,Height,AutoMaxHeight,AutoMaxWidth,ShowMonthsPanel,MaxHeight,SelectionMode,VerticalStretch,ShowCurrentDate,HorizontalStretch,WidthInMonths,CalendarNavigation,EnableDrag,HeightInMonths,Border,ContextMenu,ExtendedTooltip,Events'
+	'Table' = 'Representation,Visible,TitleHeight,TitleLocation,CommandBarLocation,Enabled,UserVisible,Autofill,ReadOnly,SkipOnInput,DefaultItem,ChangeRowSet,ChangeRowOrder,Width,AutoMaxWidth,MaxWidth,Height,AutoMaxHeight,MaxHeight,HeightInTableRows,HeightControlVariant,AutoMaxRowsCount,MaxRowsCount,ChoiceMode,MultipleChoice,RowInputMode,SelectionMode,RowSelectionMode,Header,HeaderHeight,Footer,FooterHeight,HorizontalScrollBar,VerticalScrollBar,HorizontalLines,VerticalLines,UseAlternationRowColor,AutoInsertNewRow,AutoAddIncomplete,AutoMarkIncomplete,SearchOnInput,InitialListView,InitialTreeView,HorizontalStretch,VerticalStretch,Output,EnableStartDrag,EnableDrag,FileDragMode,DataPath,RowPictureDataPath,RowsPicture,TextColor,BackColor,BorderColor,Font,Title,BehaviorOnHorizontalCompression,TitleTextColor,Shortcut,TitleFont,CommandSet,ToolTip,ToolTipRepresentation,SearchStringLocation,ViewStatusLocation,RefreshRequest,SearchControlLocation,CurrentRowUse,AutoRefresh,AutoRefreshPeriod,Period,ChoiceFoldersAndItems,RestoreCurrentRow,GroupHorizontalAlign,GroupVerticalAlign,RowFilter,TopLevelParent,ViewMode,ShowRoot,SettingsNamedItemDetailedRepresentation,AllowRootChoice,UpdateOnDataChange,UserSettingsGroup,AllowGettingCurrentRowURL,ContextMenu,AutoCommandBar,ExtendedTooltip,SearchStringAddition,ViewStatusAddition,SearchControlAddition,Events,ChildItems'
+	'UsualGroup' = 'UserVisible,Visible,Enabled,ReadOnly,EnableContentChange,Title,TitleTextColor,TitleFont,ToolTip,ToolTipRepresentation,Shortcut,Width,Height,HorizontalStretch,VerticalStretch,GroupHorizontalAlign,GroupVerticalAlign,Group,ChildrenAlign,HorizontalSpacing,VerticalSpacing,HorizontalAlign,VerticalAlign,Behavior,CollapsedRepresentationTitle,Collapsed,ControlRepresentation,Representation,Format,United,ShowLeftMargin,ChildItemsWidth,ShowTitle,TitleDataPath,BackColor,ThroughAlign,CurrentRowUse,ExtendedTooltip,ChildItems'
+	'ColumnGroup' = 'Visible,ReadOnly,UserVisible,EnableContentChange,Enabled,Title,TitleTextColor,TitleFont,ToolTip,ToolTipRepresentation,Width,Height,HorizontalStretch,VerticalStretch,Group,ShowTitle,TitleBackColor,ShowInHeader,HeaderPicture,HeaderHorizontalAlign,FixingInTable,ExtendedTooltip,ChildItems'
+	'Pages' = 'UserVisible,Visible,Enabled,ReadOnly,EnableContentChange,Title,TitleFont,ToolTip,ToolTipRepresentation,Width,Height,HorizontalStretch,VerticalStretch,GroupHorizontalAlign,GroupVerticalAlign,PagesRepresentation,CurrentRowUse,ExtendedTooltip,Events,ChildItems'
+	'Page' = 'Visible,UserVisible,Enabled,ReadOnly,EnableContentChange,Title,GroupVerticalAlign,TitleTextColor,Shortcut,TitleFont,ToolTip,ToolTipRepresentation,Width,Height,HorizontalStretch,VerticalStretch,Picture,Format,Group,ChildrenAlign,HorizontalSpacing,VerticalSpacing,ChildItemsWidth,ScrollOnCompress,HorizontalAlign,VerticalAlign,ShowTitle,TitleDataPath,BackColor,ExtendedTooltip,ChildItems'
+	'Button' = 'Type,Visible,TitleHeight,UserVisible,Representation,DefaultButton,SkipOnInput,Enabled,DefaultItem,Width,AutoMaxWidth,MaxWidth,Height,AutoMaxHeight,MaxHeight,HorizontalStretch,GroupHorizontalAlign,Check,GroupVerticalAlign,VerticalStretch,CommandName,Parameter,DataPath,TextColor,BackColor,BorderColor,Font,Picture,Title,RepresentationInContextMenu,ToolTipRepresentation,Shape,PictureLocation,ShapeRepresentation,LocationInCommandBar,ExtendedTooltip'
+	'ButtonGroup' = 'Visible,UserVisible,EnableContentChange,Title,GroupVerticalAlign,Width,ToolTip,ToolTipRepresentation,HorizontalStretch,GroupHorizontalAlign,Representation,CommandSource,VerticalStretch,ExtendedTooltip,ChildItems'
+	'CommandBar' = 'Visible,Item,Enabled,ReadOnly,EnableContentChange,Title,ToolTip,Width,ToolTipRepresentation,Height,HorizontalStretch,VerticalStretch,GroupHorizontalAlign,GroupVerticalAlign,HorizontalLocation,CommandSource,ExtendedTooltip,ChildItems'
+	'Popup' = 'UserVisible,Visible,EnableContentChange,Title,TitleFont,ToolTip,TitleTextColor,Width,HorizontalStretch,Picture,VerticalStretch,ToolTipRepresentation,GroupHorizontalAlign,CommandSource,Representation,BackColor,ShapeRepresentation,ExtendedTooltip,ChildItems'
+}
+$script:rankIndex = @{}
+foreach ($rk in $script:childRank.Keys) {
+	$rh = @{}
+	$ri = 0
+	foreach ($rt in ($script:childRank[$rk] -split ',')) { $rh[$rt] = $ri; $ri++ }
+	$script:rankIndex[$rk] = $rh
+}
+
+# Children that are not properties: companions, events, the element tree, the form's sections.
+$script:structTagsElement = @('ContextMenu','ExtendedTooltip','AutoCommandBar','SearchStringAddition','ViewStatusAddition','SearchControlAddition','Events','ChildItems')
+$script:structTagsForm = @('AutoCommandBar','Events','ChildItems','Attributes','Commands','Parameters','BaseForm','CommandInterface')
+
+function Get-StructTags([string]$tag) {
+	if ($tag -eq 'Form') { return $script:structTagsForm }
+	return $script:structTagsElement
+}
+
+function Get-PropTags([string]$tag) {
+	$struct = Get-StructTags $tag
+	return @($script:childRank[$tag] -split ',' | Where-Object { $struct -notcontains $_ })
+}
+
+function Get-RankOf([string]$parentTag, [string]$childTag) {
+	$h = $script:rankIndex[$parentTag]
+	if ($h -and $h.ContainsKey($childTag)) { return $h[$childTag] }
+	return -1
+}
+
+# DSL key -> XML tag where it is not the PascalCase of the key (the emitters of form-compile).
+# An alternative after | is taken when the first is not a property of the element (LabelField
+# spells its hyperlink Hiperlink in the platform's XML).
+$script:setKeyTag = @{
+	path = 'DataPath'; markIncomplete = 'AutoMarkIncomplete'; tooltip = 'ToolTip'
+	tooltipRepresentation = 'ToolTipRepresentation'; hidden = 'Visible'; visible = 'Visible'
+	disabled = 'Enabled'; enabled = 'Enabled'; command = 'CommandName'; commandName = 'CommandName'
+	stdCommand = 'CommandName'; checked = 'Check'; collapsedTitle = 'CollapsedRepresentationTitle'
+	src = 'Picture'; loadTransparent = 'Picture'; transparentPixel = 'Picture'; picture = 'Picture'
+	hyperlink = 'Hyperlink|Hiperlink'; columnGroup = 'Group'; excludedCommands = 'CommandSet'
+}
+
+# Keys that change what the element is made of: its tree, companions, name or type.
+$script:setRefusedKeys = @{
+	children = 'the content of a group moves with move / remove / elements'
+	columns = 'the columns of a table are elements - use elements, move or remove'
+	name = 'an element is not renamed'
+	contextMenu = 'the context menu is a companion'
+	extendedTooltip = 'the extended tooltip is a companion'
+	commandBar = 'the command bar is a companion'
+	tableAutofill = 'the command bar is a companion'
+	additions = 'the additions of a table are companions'
+	events = 'use on / off'
+	handlers = 'use on / off'
+	displayImportance = 'DisplayImportance is an attribute of the element, not a property'
+}
+# DSL type keys: a key that would make form-compile read the probe as another element.
+$script:setTypeKeyNames = @('input','check','radio','label','labelField','table','pages','page','button','calendar','cmdBar','popup','buttonGroup','picField','picture','columnGroup','group')
+
+$script:setTypeKeys = @{
+	InputField = 'input'; CheckBoxField = 'check'; LabelDecoration = 'label'; LabelField = 'labelField'
+	Table = 'table'; UsualGroup = 'group'; Pages = 'pages'; Page = 'page'; Button = 'button'
+	PictureDecoration = 'picture'; PictureField = 'picField'; CalendarField = 'calendar'
+	CommandBar = 'cmdBar'; Popup = 'popup'; RadioButtonField = 'radio'; ColumnGroup = 'columnGroup'
+	ButtonGroup = 'buttonGroup'
+}
+
+function Get-SetKeyTag([string]$key, [string]$tag) {
+	$props = Get-PropTags $tag
+	$cand = if ($script:setKeyTag.ContainsKey($key)) { "$($script:setKeyTag[$key])" } else { $key.Substring(0, 1).ToUpper() + $key.Substring(1) }
+	foreach ($alt in ($cand -split '\|')) {
+		if ($props -ccontains $alt) { return $alt }
+	}
+	return $null
+}
+
+function Test-SetRemoval($v) {
+	if ($null -eq $v) { return $true }
+	if ($v -is [array]) { return ($v.Count -eq 0) }
+	if ($v -is [System.Management.Automation.PSCustomObject]) { return (@($v.PSObject.Properties).Count -eq 0) }
+	return $false
+}
+
+function Remove-NodeWithWs($node) {
+	$parent = $node.ParentNode
+	$prev = $node.PreviousSibling
+	if ($prev -and ($prev.NodeType -eq 'Whitespace' -or $prev.NodeType -eq 'SignificantWhitespace')) { $parent.RemoveChild($prev) | Out-Null }
+	$parent.RemoveChild($node) | Out-Null
+}
+
+# A property goes before the first child of a greater rank; a tag outside the table goes before
+# the first companion / ChildItems / Events; nothing greater - at the end.
+function Insert-ByRank($parent, [string]$parentTag, $newNode, [string]$childIndent) {
+	$ref = $null
+	$rank = Get-RankOf $parentTag $newNode.LocalName
+	if ($rank -ge 0) {
+		foreach ($c in $parent.ChildNodes) {
+			if ($c.NodeType -ne 'Element') { continue }
+			if ((Get-RankOf $parentTag $c.LocalName) -gt $rank) { $ref = $c; break }
+		}
+	} else {
+		Write-Host "[WARN] <$($newNode.LocalName)> is not in the child order table of <$parentTag> - placed before the companions, ChildItems and Events"
+		$struct = Get-StructTags $parentTag
+		foreach ($c in $parent.ChildNodes) {
+			if ($c.NodeType -eq 'Element' -and $struct -contains $c.LocalName) { $ref = $c; break }
+		}
+	}
+	if ($ref) {
+		$parent.InsertBefore($newNode, $ref) | Out-Null
+		$parent.InsertBefore($xmlDoc.CreateWhitespace("`r`n$childIndent"), $ref) | Out-Null
+	} else {
+		Insert-IntoContainer -container $parent -newNode $newNode -afterName $null -childIndent $childIndent
+	}
+}
+
+function Get-ChildByTag($parent, [string]$tag) {
+	foreach ($c in $parent.ChildNodes) {
+		if ($c.NodeType -eq 'Element' -and $c.LocalName -eq $tag) { return $c }
+	}
+	return $null
+}
+
+function New-EventNode([string]$name, [string]$handler, [string]$callType) {
+	$ev = $xmlDoc.CreateElement("Event", $formNs)
+	$ev.SetAttribute("name", $name)
+	if ($callType) { $ev.SetAttribute("callType", $callType) }
+	$ev.InnerText = $handler
+	return $ev
+}
+
+function Format-EventLabel([string]$name, [string]$callType) {
+	if ($callType) { return "$name[$callType]" }
+	return $name
+}
+
+# on: entries {name, handler, callType}; an event of the same name and callType is replaced.
+function Merge-Events($target, [string]$tag, $entries, $changes) {
+	if ($null -eq $entries -or @($entries).Count -eq 0) { return }
+	$evs = Get-ChildByTag $target 'Events'
+	$childIndent = Get-ChildIndent $target
+	if (-not $evs) {
+		$evs = $xmlDoc.CreateElement("Events", $formNs)
+		Insert-ByRank $target $tag $evs $childIndent
+	}
+	$evIndent = $childIndent + "`t"
+	foreach ($e in @($entries)) {
+		$old = $null
+		foreach ($c in $evs.ChildNodes) {
+			if ($c.NodeType -eq 'Element' -and $c.LocalName -eq 'Event' -and $c.GetAttribute("name") -eq $e.name -and $c.GetAttribute("callType") -eq "$($e.callType)") { $old = $c; break }
+		}
+		$new = New-EventNode $e.name $e.handler $e.callType
+		if ($old) {
+			if ($old.InnerText -ne $e.handler) {
+				$evs.ReplaceChild($new, $old) | Out-Null
+				[void]$changes.Add("~event $(Format-EventLabel $e.name $e.callType)")
+			}
+		} else {
+			Insert-IntoContainer -container $evs -newNode $new -afterName $null -childIndent $evIndent
+			[void]$changes.Add("+event $(Format-EventLabel $e.name $e.callType)")
+		}
+	}
+}
+
+# off: entries {name, callType}; no callType - every event of that name. An emptied Events goes.
+function Remove-Events($target, [string]$what, $entries, $changes) {
+	if ($null -eq $entries -or @($entries).Count -eq 0) { return }
+	$evs = Get-ChildByTag $target 'Events'
+	foreach ($e in @($entries)) {
+		$hits = @()
+		if ($evs) {
+			foreach ($c in $evs.ChildNodes) {
+				if ($c.NodeType -ne 'Element' -or $c.LocalName -ne 'Event' -or $c.GetAttribute("name") -ne $e.name) { continue }
+				if ($e.callType -and $c.GetAttribute("callType") -ne "$($e.callType)") { continue }
+				$hits += $c
+			}
+		}
+		if ($hits.Count -eq 0) {
+			Write-Host "[INFO] $what has no event '$(Format-EventLabel $e.name $e.callType)' - nothing to remove"
+			continue
+		}
+		foreach ($h in $hits) {
+			[void]$changes.Add("-event $(Format-EventLabel $e.name $h.GetAttribute('callType'))")
+			Remove-NodeWithWs $h
+		}
+	}
+	if ($evs -and @($evs.ChildNodes | Where-Object { $_.NodeType -eq 'Element' }).Count -eq 0) { Remove-NodeWithWs $evs }
+}
+
+function Read-SetEvents($raw, [string]$what, [bool]$needHandler) {
+	$list = New-Object System.Collections.ArrayList
+	if ($null -eq $raw) { return ,$list }
+	foreach ($e in @($raw)) {
+		if ($e -is [string]) {
+			if ($needHandler) {
+				Write-Host "[ERROR] set ${what}: event '$e' needs a handler - the form has no handler naming rule, give { `"event`": `"$e`", `"handler`": `"...`" }"
+				exit 1
+			}
+			[void]$list.Add([pscustomobject]@{ name = $e; handler = $null; callType = $null })
+		} elseif ($e -is [System.Management.Automation.PSCustomObject] -and $e.event) {
+			if ($needHandler -and -not $e.handler) {
+				Write-Host "[ERROR] set ${what}: event '$($e.event)' needs a handler"
+				exit 1
+			}
+			[void]$list.Add([pscustomobject]@{ name = "$($e.event)"; handler = if ($e.handler) { "$($e.handler)" } else { $null }; callType = if ($e.callType) { "$($e.callType)" } else { $null } })
+		} else {
+			Write-Host "[ERROR] set ${what}: an event is a name or { `"event`": ..., `"handler`": ..., `"callType`": ... }"
+			exit 1
+		}
+	}
+	return ,$list
+}
+
+function Read-SetOff($raw, [string]$what) {
+	$list = Read-SetEvents $raw $what $false
+	return ,$list
+}
+
+$changedLines = New-Object System.Collections.ArrayList
+$changedCount = 0
+
+if ($def.set -and @($def.set).Count -gt 0) {
+	$plans = New-Object System.Collections.ArrayList
+	$seenSet = @{}
+	$probeEls = New-Object System.Collections.ArrayList
+	$formDsl = [ordered]@{}
+	$n = 0
+	foreach ($item in @($def.set)) {
+		$n++
+		$isForm = ($null -ne $item.PSObject.Properties['form'] -and $item.form -eq $true)
+		$plan = [pscustomobject]@{ IsForm = $isForm; Node = $null; Tag = 'Form'; Name = ''; SetTags = (New-Object System.Collections.ArrayList); RmTags = (New-Object System.Collections.ArrayList); On = $null; Off = $null; Probe = $null }
+		if ($isForm) {
+			$plan.Name = $formName
+			$plan.Node = $root
+			if ($seenSet.ContainsKey('<form>')) { Write-Host "[ERROR] set: the form appears twice - one item per element"; exit 1 }
+			$seenSet['<form>'] = $true
+			$props = Get-PropTags 'Form'
+			$titleGiven = $false
+			$userProps = [ordered]@{}
+			foreach ($p in $item.PSObject.Properties) {
+				$k = $p.Name; $v = $p.Value
+				if ($k -eq 'form') { continue }
+				if ($k -eq 'on') { $plan.On = Read-SetEvents $v 'form' $true; continue }
+				if ($k -eq 'off') { $plan.Off = Read-SetOff $v 'form'; continue }
+				if ($k -eq 'title') {
+					if ($null -eq $v -or "$v" -eq '') { [void]$plan.RmTags.Add('Title') } else { [void]$plan.SetTags.Add('Title'); $formDsl['title'] = "$v"; $titleGiven = $true }
+					continue
+				}
+				if ($k -eq 'properties') {
+					if ($v -isnot [System.Management.Automation.PSCustomObject]) { Write-Host "[ERROR] set form: properties is an object { name: value }"; exit 1 }
+					foreach ($pp in $v.PSObject.Properties) {
+						$pk = $pp.Name
+						if ($pk -eq 'title') { Write-Host "[ERROR] set form: give title next to properties, not inside"; exit 1 }
+						$ptag = $pk.Substring(0, 1).ToUpper() + $pk.Substring(1)
+						if ($props -notcontains $ptag) { Write-Host "[ERROR] set form: '$pk' is not a form property known to the order table (<$ptag>)"; exit 1 }
+						if ($null -eq $pp.Value -or "$($pp.Value)" -eq '' -or (Test-SetRemoval $pp.Value)) { [void]$plan.RmTags.Add($ptag) }
+						else { [void]$plan.SetTags.Add($ptag); $userProps[$pk] = $pp.Value }
+					}
+					continue
+				}
+				Write-Host "[ERROR] set form: unknown key '$k' - the form item takes title, properties, on, off"
+				exit 1
+			}
+			if ($userProps.Count -gt 0 -or $titleGiven) {
+				# a title makes form-compile add autoTitle: false; "" is its suppress marker
+				if ($titleGiven -and -not $userProps.Contains('autoTitle')) { $userProps['autoTitle'] = '' }
+				if ($userProps.Count -gt 0) { $formDsl['properties'] = [pscustomobject]$userProps }
+			}
+			if ($plan.On -and $plan.On.Count -gt 0) {
+				$evMap = [ordered]@{}
+				foreach ($e in $plan.On) { if (-not $evMap.Contains($e.name)) { $evMap[$e.name] = $e.handler } }
+				$formDsl['events'] = [pscustomobject]$evMap
+			}
+			foreach ($t in $plan.SetTags) { if ($plan.RmTags -contains $t) { Write-Host "[ERROR] set form: '$t' is both set and removed"; exit 1 } }
+		} else {
+			$ename = "$($item.element)"
+			if (-not $ename) { Write-Host "[ERROR] set item #$n names no element (and is not form: true)"; exit 1 }
+			if ($seenSet.ContainsKey($ename)) { Write-Host "[ERROR] set: element '$ename' appears twice - one item per element"; exit 1 }
+			$seenSet[$ename] = $true
+			$node = Find-Target $ename
+			if (-not $node) { Write-Host "[ERROR] set: element '$ename' not found (set works on the elements the form has before this edit)"; exit 1 }
+			$tag = $node.LocalName
+			if (-not $script:setTypeKeys.ContainsKey($tag)) {
+				Write-Host "[ERROR] set does not support <$tag> yet ('$ename')$(if (@('ContextMenu','ExtendedTooltip','AutoCommandBar','SearchStringAddition','ViewStatusAddition','SearchControlAddition') -contains $tag) { ' - companions are changed through the keys of their owner' })"
+				exit 1
+			}
+			$plan.Node = $node; $plan.Tag = $tag; $plan.Name = $ename
+			$typeKey = $script:setTypeKeys[$tag]
+			$typeVal = $ename
+			if ($tag -eq 'UsualGroup' -or $tag -eq 'ColumnGroup') { $typeVal = 'vertical' }
+			$probe = [ordered]@{}
+			$hasTitle = $false
+			foreach ($p in $item.PSObject.Properties) {
+				$k = $p.Name; $v = $p.Value
+				if ($k -eq 'element') { continue }
+				if ($k -eq 'on') { $plan.On = Read-SetEvents $v "'$ename'" $false; continue }
+				if ($k -eq 'off') { $plan.Off = Read-SetOff $v "'$ename'"; continue }
+				if ($k -eq 'form') { Write-Host "[ERROR] set '$ename': form belongs to an item of its own"; exit 1 }
+				if ($script:setRefusedKeys.ContainsKey($k)) { Write-Host "[ERROR] set '$ename': key '$k' is not accepted - $($script:setRefusedKeys[$k])"; exit 1 }
+				# group (UsualGroup) and columnGroup (ColumnGroup) are the type key and the orientation at once
+				$isOrient = (($tag -eq 'UsualGroup' -and $k -eq 'group') -or ($tag -eq 'ColumnGroup' -and $k -eq 'columnGroup'))
+				if (-not $isOrient -and $script:setTypeKeyNames -contains $k) {
+					$keyOk = (($k -eq 'picture' -and @('Button','Popup','Page') -contains $tag) -or ($k -eq 'group' -and $tag -eq 'Page'))
+					if (-not $keyOk) {
+						Write-Host "[ERROR] set '$ename': key '$k' is a type key of form-compile - it would turn the element into another one"
+						exit 1
+					}
+				}
+				$ptag = Get-SetKeyTag $k $tag
+				if (-not $ptag) { Write-Host "[ERROR] set '$ename': key '$k' is not a property of <$tag> (no such child in the order table)"; exit 1 }
+				if (Test-SetRemoval $v) {
+					if ($plan.RmTags -notcontains $ptag) { [void]$plan.RmTags.Add($ptag) }
+					continue
+				}
+				if ($plan.SetTags -notcontains $ptag) { [void]$plan.SetTags.Add($ptag) }
+				if ($isOrient) { $typeVal = "$v"; continue }
+				$probe[$k] = $v
+				if ($k -eq 'title') { $hasTitle = $true }
+			}
+			foreach ($t in $plan.SetTags) { if ($plan.RmTags -contains $t) { Write-Host "[ERROR] set '$ename': <$t> is both set and removed"; exit 1 } }
+			$el = [ordered]@{}
+			$el[$typeKey] = $typeVal
+			$el['name'] = $ename
+			if (-not $hasTitle) { $el['title'] = '' }
+			foreach ($k in $probe.Keys) { $el[$k] = $probe[$k] }
+			if ($plan.On -and $plan.On.Count -gt 0) {
+				$onNames = @()
+				foreach ($e in $plan.On) { if ($onNames -notcontains $e.name) { $onNames += $e.name } }
+				$el['on'] = $onNames
+				foreach ($e in $plan.On) { if ($plan.Off -and @($plan.Off | Where-Object { $_.name -eq $e.name }).Count -gt 0) { Write-Host "[ERROR] set '$ename': event '$($e.name)' is both in on and in off"; exit 1 } }
+			}
+			$probeObj = [pscustomobject]$el
+			$ownerTag = $node.ParentNode.ParentNode.LocalName
+			if (@('Button','ButtonGroup','Popup') -contains $tag -and @('AutoCommandBar','ContextMenu','CommandBar','ButtonGroup','Popup') -contains $ownerTag) {
+				$bar = [ordered]@{ cmdBar = "FormEditTmpBar$n"; children = @($probeObj) }
+				[void]$probeEls.Add([pscustomobject]$bar)
+			} else {
+				[void]$probeEls.Add($probeObj)
+			}
+		}
+		[void]$plans.Add($plan)
+	}
+
+	# --- Compile the probes (one run for all items) ---
+	$cDoc = $null
+	if ($probeEls.Count -gt 0 -or $formDsl.Count -gt 0) {
+		$setDsl = [ordered]@{}
+		foreach ($k in $formDsl.Keys) { $setDsl[$k] = $formDsl[$k] }
+		if ($probeEls.Count -gt 0) { $setDsl['elements'] = @($probeEls) }
+		$cDoc = Invoke-FormCompileFragment ([pscustomobject]$setDsl)
+		$cRootSet = $cDoc.DocumentElement
+		$cNsSet = New-Object System.Xml.XmlNamespaceManager($cDoc.NameTable)
+		$cNsSet.AddNamespace("f", $formNs)
+	}
+
+	# --- Plan: which compiled nodes go where ---
+	$srcForNs = @()
+	foreach ($plan in $plans) {
+		$plan | Add-Member -NotePropertyName CompEl -NotePropertyValue $null
+		$plan | Add-Member -NotePropertyName AutoHandlers -NotePropertyValue @{}
+		if ($plan.IsForm) { $plan.CompEl = $cRootSet }
+		elseif ($cDoc) { $plan.CompEl = $cRootSet.SelectSingleNode("//f:$($plan.Tag)[@name='$($plan.Name)']", $cNsSet) }
+		if ($plan.CompEl) {
+			foreach ($t in $plan.SetTags) {
+				$sn = Get-ChildByTag $plan.CompEl $t
+				if ($sn) { $srcForNs += $sn }
+			}
+			foreach ($ev in @($plan.CompEl.SelectNodes('f:Events/f:Event', $cNsSet))) { $plan.AutoHandlers[$ev.GetAttribute("name")] = $ev.InnerText }
+		}
+		if (-not $plan.IsForm -and $plan.SetTags.Count -gt 0 -and -not $plan.CompEl) {
+			Write-Host "[ERROR] set '$($plan.Name)': form-compile produced no element - nothing was written"
+			exit 1
+		}
+		foreach ($e in @($plan.On)) {
+			if ($e -and -not $e.handler) {
+				if (-not $plan.AutoHandlers.ContainsKey($e.name)) { Write-Host "[ERROR] set '$($plan.Name)': no handler name for event '$($e.name)' - nothing was written"; exit 1 }
+				$e.handler = $plan.AutoHandlers[$e.name]
+			}
+		}
+	}
+	if ($srcForNs.Count -gt 0) { Ensure-Namespaces $cDoc $srcForNs }
+
+	# --- Apply ---
+	foreach ($plan in $plans) {
+		$target = $plan.Node
+		$tag = $plan.Tag
+		$what = if ($plan.IsForm) { 'the form' } else { "'$($plan.Name)'" }
+		$changes = New-Object System.Collections.ArrayList
+		$dst = Get-ChildIndent $target
+		$src = if ($plan.CompEl) { Get-ChildIndent $plan.CompEl } else { $dst }
+
+		foreach ($t in $plan.RmTags) {
+			$old = Get-ChildByTag $target $t
+			if ($old) { Remove-NodeWithWs $old; [void]$changes.Add("-$t") }
+			else { Write-Host "[INFO] $what has no <$t> - nothing to remove" }
+		}
+		foreach ($t in $plan.SetTags) {
+			$sn = if ($plan.CompEl) { Get-ChildByTag $plan.CompEl $t } else { $null }
+			$old = Get-ChildByTag $target $t
+			if ($sn) {
+				$imp = $xmlDoc.ImportNode($sn, $true)
+				Set-NodeIndent $imp $src $dst
+				if ($old) {
+					if ($old.OuterXml -ne $imp.OuterXml) {
+						$target.ReplaceChild($imp, $old) | Out-Null
+						[void]$changes.Add("~$t")
+					}
+				} else {
+					Insert-ByRank $target $tag $imp $dst
+					[void]$changes.Add("+$t")
+				}
+			} elseif ($old) {
+				# the compiler writes a property only when it differs from the default
+				Remove-NodeWithWs $old
+				[void]$changes.Add("-$t")
+			}
+		}
+		Remove-Events $target $what $plan.Off $changes
+		Merge-Events $target $tag $plan.On $changes
+
+		if ($changes.Count -gt 0) {
+			[void]$changedLines.Add("  ~ [$tag] $($plan.Name): $($changes -join ', ')")
+			$changedCount++
+		} else {
+			Write-Host "[INFO] ${what}: already as requested"
+		}
+	}
+}
+
 # === 10. Add elements and attributes ===
 
 $addedElems = @()
@@ -1179,6 +1638,12 @@ if ($script:isExtension) {
 	Write-Host ""
 }
 
+if ($changedLines.Count -gt 0) {
+	Write-Host "Changed:"
+	foreach ($line in $changedLines) { Write-Host $line }
+	Write-Host ""
+}
+
 if ($addedFormEvents.Count -gt 0) {
 	Write-Host "Added form events:"
 	foreach ($line in $addedFormEvents) { Write-Host $line }
@@ -1216,6 +1681,7 @@ if ($addedCmds.Count -gt 0) {
 
 Write-Host "---"
 $totalParts = @()
+if ($changedCount -gt 0) { $totalParts += "$changedCount changed element(s)" }
 if ($addedFormEvents.Count -gt 0) { $totalParts += "$($addedFormEvents.Count) form event(s)" }
 if ($addedElemEvents.Count -gt 0) { $totalParts += "$($addedElemEvents.Count) element event(s)" }
 if ($addedElems.Count -gt 0) {

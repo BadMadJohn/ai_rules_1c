@@ -62,6 +62,7 @@ $FormAdd      = Join-Path $ToolsDir '1c-form-scaffold\scripts\form-add.ps1'
 $RemoveForm   = Join-Path $ToolsDir '1c-form-scaffold\scripts\remove-form.ps1'
 $FormCompile  = Join-Path $ToolsDir '1c-form-compile\scripts\form-compile.ps1'
 $FormEdit     = Join-Path $ToolsDir '1c-form-edit\scripts\form-edit.ps1'
+$FormValidate = Join-Path $ToolsDir '1c-form-validate\scripts\form-validate.ps1'
 
 foreach ($required in @($MetaEdit, $MetaCompile, $RemoveForm,
         (Join-Path $FixturesDir 'config-dump'), (Join-Path $FixturesDir 'epf-with-form'))) {
@@ -1542,6 +1543,154 @@ Register-Case 'form-edit: BOM and EOL of an LF and a CRLF form survive, compiled
     Assert-True ($facts.Text -match '<Form [^>]*xmlns:v8=') 'xmlns:v8 sits on <Form>'
     $inner = $facts.Text.Substring($facts.Text.IndexOf('>', $facts.Text.IndexOf('<Form ')))
     Assert-True ($inner -notmatch 'xmlns') 'no declarations below <Form>'
+}
+
+# ---------------------------------------------------------------- form-edit set
+
+function Get-ChildTags($Facts, [string]$XPath) {
+    $node = (Get-FormNodes $Facts $XPath)[0]
+    return (@($node.ChildNodes | Where-Object { $_.NodeType -eq 'Element' } | ForEach-Object { $_.LocalName }) -join ',')
+}
+
+function Assert-FormValid([string]$Target, [string]$What) {
+    $run = Invoke-Tool $FormValidate @('-FormPath', $Target) (Split-Path $Target)
+    Assert-Equal 0 $run.ExitCode "form-validate of $What (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    Assert-True ($run.StdOut -match 'Validation OK| 0 errors') "form-validate of $What reports errors: $($run.StdOut)"
+}
+
+function Assert-NoBlankLines($Facts, [string]$What) {
+    $lines = @($Facts.Lines)
+    if ($lines.Count -gt 0 -and $lines[-1] -eq '') { $lines = $lines[0..($lines.Count - 2)] }
+    $blank = @($lines | Where-Object { $_.Trim() -eq '' })
+    Assert-Equal 0 $blank.Count "$What : blank lines in the form"
+}
+
+Register-Case 'form-edit: set adds properties and an event to an existing input, ids stay, the properties take their rank' {
+    param($work)
+    $target = Initialize-FormEditCase $work
+    $before = Get-FileFacts $target
+    $name = (Read-JsonFixture 'form-edit\defs\set-input.json').set[0].element
+    $run = Invoke-FormEditDef $work $target 'set-input.json'
+    Assert-Equal 0 $run.ExitCode "form-edit (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    Assert-True ($run.StdOut -match '(?m)^Changed:') 'no Changed section'
+    $after = Get-FileFacts $target
+    Assert-StyleKept $before $after 'set input'
+    Assert-Equal ((Get-ElementIds $before | Sort-Object) -join ',') ((Get-ElementIds $after | Sort-Object) -join ',') 'element ids'
+    Assert-Equal 'DataPath,Title,ChoiceButton,ClearButton,ChoiceParameterLinks,ContextMenu,ExtendedTooltip,Events' (Get-ChildTags $after "//f:InputField[@name='$name']") 'child order of the input'
+    Assert-Equal 1 (Get-FormNodes $after "//f:InputField[@name='$name']/f:Events/f:Event[@name='StartChoice']").Count 'StartChoice event'
+    Assert-OnlyAdditions $before $after 'set input'
+    Assert-NoBlankLines $after 'set input'
+    Assert-FormValid $target 'set input'
+}
+
+Register-Case 'form-edit: set removes with [] and off, replaces a Title and drops an emptied Events' {
+    param($work)
+    $target = Initialize-FormEditCase $work
+    $first = Invoke-FormEditDef $work $target 'set-input.json'
+    Assert-Equal 0 $first.ExitCode "set-input (stdout: $($first.StdOut) stderr: $($first.StdErr))"
+    $before = Get-FileFacts $target
+    $def = (Read-JsonFixture 'form-edit\defs\set-input-undo.json').set[0]
+    $name = $def.element
+    $run = Invoke-FormEditDef $work $target 'set-input-undo.json'
+    Assert-Equal 0 $run.ExitCode "form-edit (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    Assert-True ($run.StdOut -match '\[INFO\]') 'no info for the event that is not there'
+    $after = Get-FileFacts $target
+    Assert-StyleKept $before $after 'set input undo'
+    Assert-Equal ((Get-ElementIds $before | Sort-Object) -join ',') ((Get-ElementIds $after | Sort-Object) -join ',') 'element ids'
+    Assert-Equal 'DataPath,Title,ChoiceButton,ClearButton,ContextMenu,ExtendedTooltip' (Get-ChildTags $after "//f:InputField[@name='$name']") 'child order of the input'
+    $titles = Get-FormNodes $after "//f:InputField[@name='$name']/f:Title//*[local-name()='content']"
+    Assert-Equal 1 $titles.Count 'one Title content'
+    Assert-Equal $def.title $titles[0].InnerText 'Title replaced'
+    Assert-NoBlankLines $after 'set input undo'
+    Assert-FormValid $target 'set input undo'
+}
+
+Register-Case 'form-edit: set takes table events with callType, a default value removes the property' {
+    param($work)
+    $target = Initialize-FormEditCase $work
+    $before = Get-FileFacts $target
+    $def = (Read-JsonFixture 'form-edit\defs\set-table.json').set[0]
+    $name = $def.element
+    $run = Invoke-FormEditDef $work $target 'set-table.json'
+    Assert-Equal 0 $run.ExitCode "form-edit (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    $after = Get-FileFacts $target
+    Assert-StyleKept $before $after 'set table'
+    Assert-Equal ((Get-ElementIds $before | Sort-Object) -join ',') ((Get-ElementIds $after | Sort-Object) -join ',') 'element ids'
+    Assert-Equal 'Representation,Visible,HeightInTableRows,DataPath,ContextMenu,AutoCommandBar,ExtendedTooltip,SearchStringAddition,ViewStatusAddition,SearchControlAddition,Events,ChildItems' (Get-ChildTags $after "//f:Table[@name='$name']") 'child order of the table'
+    $events = Get-FormNodes $after "//f:Table[@name='$name']/f:Events/f:Event"
+    Assert-Equal 2 $events.Count 'table events'
+    $before2 = @($events | Where-Object { $_.GetAttribute('callType') -eq 'Before' })
+    Assert-Equal 1 $before2.Count 'event with callType Before'
+    Assert-Equal $def.on[1].handler $before2[0].InnerText 'explicit handler'
+    Assert-OnlyAdditions $before $after 'set table'
+    Assert-FormValid $target 'set table'
+
+    # visible: true is the default - the compiler writes nothing, the property goes; the same event name with
+    # another callType stays apart; a handler given for an existing event replaces it
+    $mid = Get-FileFacts $target
+    $run2 = Invoke-FormEditDef $work $target 'set-table-undo.json'
+    Assert-Equal 0 $run2.ExitCode "undo (stdout: $($run2.StdOut) stderr: $($run2.StdErr))"
+    $after2 = Get-FileFacts $target
+    Assert-Equal 0 (Get-FormNodes $after2 "//f:Table[@name='$name']/f:Visible").Count 'Visible removed'
+    $undo = (Read-JsonFixture 'form-edit\defs\set-table-undo.json').set[0]
+    $events2 = Get-FormNodes $after2 "//f:Table[@name='$name']/f:Events/f:Event"
+    Assert-Equal 1 $events2.Count 'one event left'
+    Assert-Equal $undo.on[0].handler $events2[0].InnerText 'handler replaced'
+    Assert-NoBlankLines $after2 'set table undo'
+    Assert-FormValid $target 'set table undo'
+}
+
+Register-Case 'form-edit: set changes the title, properties and events of the form' {
+    param($work)
+    $target = Initialize-FormEditCase $work
+    $before = Get-FileFacts $target
+    $def = (Read-JsonFixture 'form-edit\defs\set-form.json').set[0]
+    $run = Invoke-FormEditDef $work $target 'set-form.json'
+    Assert-Equal 0 $run.ExitCode "form-edit (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    $after = Get-FileFacts $target
+    Assert-StyleKept $before $after 'set form'
+    Assert-Equal ((Get-ElementIds $before | Sort-Object) -join ',') ((Get-ElementIds $after | Sort-Object) -join ',') 'element ids'
+    Assert-Equal 'Title,WindowOpeningMode,AutoCommandBar,Events,ChildItems,Attributes,Commands' (Get-ChildTags $after '/f:Form') 'child order of the form'
+    Assert-Equal $def.title (Get-FormNodes $after '/f:Form/f:Title//*[local-name()="content"]')[0].InnerText 'form title'
+    Assert-Equal $def.on[0].handler (Get-FormNodes $after "/f:Form/f:Events/f:Event[@name='ChoiceProcessing']")[0].InnerText 'form event handler'
+    Assert-OnlyAdditions $before $after 'set form'
+    Assert-FormValid $target 'set form'
+
+    $undo = (Read-JsonFixture 'form-edit\defs\set-form-undo.json').set[0]
+    $run2 = Invoke-FormEditDef $work $target 'set-form-undo.json'
+    Assert-Equal 0 $run2.ExitCode "undo (stdout: $($run2.StdOut) stderr: $($run2.StdErr))"
+    $after2 = Get-FileFacts $target
+    Assert-Equal 'Title,AutoTitle,AutoCommandBar,ChildItems,Attributes,Commands' (Get-ChildTags $after2 '/f:Form') 'child order of the form after undo'
+    Assert-Equal $undo.title (Get-FormNodes $after2 '/f:Form/f:Title//*[local-name()="content"]')[0].InnerText 'form title replaced'
+    Assert-NoBlankLines $after2 'set form undo'
+    Assert-FormValid $target 'set form undo'
+}
+
+Register-Case 'form-edit: set refuses an unknown element, children, a companion, an unknown key and a string form event, nothing is written' {
+    param($work)
+    $target = Initialize-FormEditCase $work
+    $before = Get-FileFacts $target
+    foreach ($def in @('set-unknown-element.json', 'set-children.json', 'set-companion.json', 'set-unknown-key.json', 'set-form-string-event.json')) {
+        $run = Invoke-FormEditDef $work $target $def
+        Assert-Equal 1 $run.ExitCode "$def must be refused (stdout: $($run.StdOut))"
+        Assert-True (($run.StdOut + $run.StdErr) -match '\[ERROR\]') "$def : no error message"
+        $after = Get-FileFacts $target
+        Assert-Equal $before.Text $after.Text "$def : the form changed"
+    }
+}
+
+Register-Case 'form-edit: set keeps BOM and EOL of an LF and a CRLF form' {
+    param($work)
+    foreach ($eol in @("`n", "`r`n")) {
+        $dir = Join-Path $work $(if ($eol -eq "`n") { 'lf' } else { 'crlf' })
+        $target = Initialize-FormEditCase $dir $eol
+        $before = Get-FileFacts $target
+        $run = Invoke-FormEditDef $dir $target 'set-input.json'
+        Assert-Equal 0 $run.ExitCode "form-edit (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+        $after = Get-FileFacts $target
+        Assert-StyleKept $before $after 'set input' $eol
+        Assert-OnlyAdditions $before $after 'set input'
+    }
 }
 
 function Assert-CompactXml([string]$Path) {
