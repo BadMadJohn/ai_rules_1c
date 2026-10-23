@@ -318,6 +318,10 @@ The PowerShell scripts under `tools/1c-meta-{compile,edit,info,remove,validate}/
 
 ## mxl-manage.md
 
+### Local fix `2026-10-23` — `mxl-decompile` absolute `-OutputPath`
+
+`mxl-decompile` v1.0 → **v1.1**: the output was always joined to the current directory, so an absolute `-OutputPath` became `<cwd>\E:\...` and the write failed with a «path format is not supported» error. A rooted path is now used as given, a relative one still resolves against the current directory (as in `mxl-compile`). Pinned by `tools/tests/metadata-tools-regression.ps1`.
+
 ### Upstream sync `2026-07-30`
 
 Scripts refreshed from [Nikolay-Shirokov/cc-1c-skills](https://github.com/Nikolay-Shirokov/cc-1c-skills): `mxl-compile` v1.1 → **v1.4**, `mxl-info` v1.0 → **v1.2**; `mxl-decompile` / `mxl-validate` unchanged. `mxl-compile` enforces the vendor support gate ([support-manage.md](support-manage.md)); `mxl-info` prints the support state of the layout's owner.

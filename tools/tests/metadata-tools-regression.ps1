@@ -1639,6 +1639,27 @@ Register-Case 'form-validate: external processor sources inside a configuration 
     Assert-True ("$($run.StdOut)$($run.StdErr)" -match 'External\* type in configuration context') 'no External* diagnostic in configuration context'
 }
 
+Register-Case 'mxl-decompile: an absolute -OutputPath is written, a relative one still resolves against the cwd' {
+    param($Work)
+    $MxlCompile = Join-Path $ToolsDir '1c-mxl-compile\scripts\mxl-compile.ps1'
+    $MxlDecompile = Join-Path $ToolsDir '1c-mxl-decompile\scripts\mxl-decompile.ps1'
+    $dsl = Join-Path $Work 'layout.json'
+    [System.IO.File]::WriteAllText($dsl, '{"columns":2,"defaultWidth":20,"areas":[{"name":"Header","rows":[{"cells":[{"col":1,"text":"Title"}]}]}]}', (New-Object System.Text.UTF8Encoding($false)))
+    $template = Join-Path $Work 'Template.xml'
+    $run = Invoke-Tool $MxlCompile @('-JsonPath', $dsl, '-OutputPath', $template) $Work
+    Assert-Equal 0 $run.ExitCode "mxl-compile (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+
+    $absolute = Join-Path $Work 'abs.json'
+    $run = Invoke-Tool $MxlDecompile @('-TemplatePath', $template, '-OutputPath', $absolute) $Work
+    Assert-Equal 0 $run.ExitCode "mxl-decompile with an absolute -OutputPath (stdout: $($run.StdOut) stderr: $($run.StdErr))"
+    Assert-True (Test-Path -LiteralPath $absolute) 'the absolute output file was not written'
+    Assert-True ((Get-FileFacts $absolute).Text -match '"Header"') 'the decompiled JSON lost the area'
+
+    $run = Invoke-Tool $MxlDecompile @('-TemplatePath', $template, '-OutputPath', 'rel.json') $Work
+    Assert-Equal 0 $run.ExitCode "mxl-decompile with a relative -OutputPath (stderr: $($run.StdErr))"
+    Assert-True (Test-Path -LiteralPath (Join-Path $Work 'rel.json')) 'the relative output file was not written beside the cwd'
+}
+
 # ---------------------------------------------------------------- run
 
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("1c-rules-regr-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
