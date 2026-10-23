@@ -171,6 +171,10 @@ The PowerShell script `tools/1c-epf-validate/scripts/epf-validate.ps1` was refre
 
 ## form-manage.md
 
+### Local fix `2026-10-23` — external processor forms inside a configuration repo
+
+`form-validate` v1.10 → **v1.11**: external data processor / report sources stored inside a configuration dump repo (`<repo>/.ExternalDataProcessors/<Name>/Forms/<Form>/Ext/Form.xml` beside `<repo>/.ExternalDataProcessors/<Name>.xml`) were read as configuration context, because the upward walk reached the repo's `Configuration.xml`; Check 12 then reported `External* type in configuration context` for the legitimate `cfg:ExternalDataProcessorObject.<Name>`. The walk now first tests each directory as an object folder whose root descriptor `<parent>/<Name>.xml` is an `ExternalDataProcessor` / `ExternalReport` and stops there as EPF/ERF context (Check 1 has no configuration version to compare in that case, as for an EPF outside any repo). Configuration context is detected exactly as before. Pinned by `tools/tests/metadata-tools-regression.ps1`.
+
 ### Local fix `2026-10-14` — input-field events and pass-through keys
 
 `form-compile` refused the input-field events `Tuning` (Регулирование), `Opening` and `StartListChoice`, which vendor forms use (ZUP dump: 333, 195 and 2 input fields; support ticket 0225a24c, ERP 2.5 `Документ.НачислениеЗарплаты.ФормаДокумента`). They are allowed for `input` in the PowerShell and Python compilers and in `form-edit`, with the handler suffixes `Регулирование` / `НачалоВыбораИзСписка`. The pass-through scalars of `genericScalars` (`markNegatives`, `threeState`, `choiceListHeight` and 30 more) were written to `Form.xml` yet reported as «unknown key … ignored»; they now count as known keys. `form-compile-dsl.md` lists the `input` and `picField` events separately, as the compiler checks them.

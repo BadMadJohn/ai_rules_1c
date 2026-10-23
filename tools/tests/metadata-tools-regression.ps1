@@ -1595,6 +1595,50 @@ public static class FakePlatform {
     Assert-True ($run.ExitCode -ne 0) 'an unknown -SessionTerminate mode was accepted'
 }
 
+Register-Case 'form-validate: external processor sources inside a configuration repo are EPF context' {
+    param($Work)
+    # <repo>\.ExternalDataProcessors\Obr\Forms\Main\Ext\Form.xml beside Obr.xml, with the
+    # repo's Configuration.xml further up: the form is external, not a config form.
+    $FormValidate = Join-Path $ToolsDir '1c-form-validate\scripts\form-validate.ps1'
+    Copy-Fixture 'config-dump' $Work "`n"
+    $epfRoot = Join-Path $Work '.ExternalDataProcessors'
+    $formXml = Join-Path $epfRoot 'Obr\Forms\Main\Ext\Form.xml'
+    New-Item -ItemType Directory -Path (Split-Path $formXml -Parent) -Force | Out-Null
+    $bom = New-Object System.Text.UTF8Encoding($true)
+    $descriptor = Join-Path $epfRoot 'Obr.xml'
+    $descriptorText = '<?xml version="1.0" encoding="UTF-8"?>' + "`n" +
+        '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">' + "`n" +
+        "`t" + '<ExternalDataProcessor uuid="55555555-5555-5555-5555-555555555555">' + "`n" +
+        "`t`t" + '<Properties><Name>Obr</Name></Properties>' + "`n" +
+        "`t`t" + '<ChildObjects><Form>Main</Form></ChildObjects>' + "`n" +
+        "`t" + '</ExternalDataProcessor>' + "`n" +
+        '</MetaDataObject>' + "`n"
+    [System.IO.File]::WriteAllText($descriptor, $descriptorText, $bom)
+    $formText = '<?xml version="1.0" encoding="UTF-8"?>' + "`n" +
+        '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.17">' + "`n" +
+        "`t" + '<AutoCommandBar name="FormCommandBar" id="-1"/>' + "`n" +
+        "`t" + '<Attributes>' + "`n" +
+        "`t`t" + '<Attribute name="Object" id="1">' + "`n" +
+        "`t`t`t" + '<Type><v8:Type>cfg:ExternalDataProcessorObject.Obr</v8:Type></Type>' + "`n" +
+        "`t`t`t" + '<MainAttribute>true</MainAttribute>' + "`n" +
+        "`t`t" + '</Attribute>' + "`n" +
+        "`t" + '</Attributes>' + "`n" +
+        '</Form>' + "`n"
+    [System.IO.File]::WriteAllText($formXml, $formText, $bom)
+
+    $run = Invoke-Tool $FormValidate @('-FormPath', $formXml) $Work
+    $text = "$($run.StdOut)$($run.StdErr)"
+    Assert-Equal 0 $run.ExitCode "an external processor form inside a configuration repo was rejected: $text"
+    Assert-True ($text -notmatch 'configuration context') "false External* diagnostic: $text"
+
+    # Without the processor descriptor the folder is just a directory of the configuration:
+    # the same type is a real error again (the detection is by the root descriptor).
+    Remove-Item -LiteralPath $descriptor -Force
+    $run = Invoke-Tool $FormValidate @('-FormPath', $formXml) $Work
+    Assert-True ($run.ExitCode -ne 0) 'the External* type passed in configuration context'
+    Assert-True ("$($run.StdOut)$($run.StdErr)" -match 'External\* type in configuration context') 'no External* diagnostic in configuration context'
+}
+
 # ---------------------------------------------------------------- run
 
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("1c-rules-regr-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
