@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Start, capture and stop a 1C test client (/TestClient) for QA MCP in native mode.
 
@@ -177,6 +177,30 @@ public static class QaTestClientNative {
         });
     }
 
+    // A new owned SDI dialog after WM_CLOSE is a possible exit question. Do not
+    // guess its text or click it: QA must inspect the same client's dialog.
+    public static long[] ExitQuestionWindows(int pid, string desktop) {
+        return OnThread<long[]>(delegate() {
+            IntPtr handle = IntPtr.Zero;
+            List<long> questions = new List<long>();
+            try {
+                foreach (IntPtr hwnd in ClientWindows(pid, desktop, out handle)) {
+                    StringBuilder cls = new StringBuilder(256);
+                    GetClassName(hwnd, cls, cls.Capacity);
+                    if (cls.ToString() != "V8TopLevelFrameSDIsec") continue;
+                    IntPtr owner = GetWindow(hwnd, 4 /* GW_OWNER */);
+                    int ownerPid;
+                    if (owner != IntPtr.Zero && IsMainWindow(owner)
+                            && GetWindowThreadProcessId(owner, out ownerPid) != 0 && ownerPid == pid)
+                        questions.Add(hwnd.ToInt64());
+                }
+                return questions.ToArray();
+            } finally {
+                if (handle != IntPtr.Zero) CloseDesktop(handle);
+            }
+        });
+    }
+
     // The exit question is often an owned V8Window, so WM_CLOSE on the main window
     // leaves it open. Click only a child whose text is the exit button. A question
     // that is visible but has no such window stays for the caller to report.
@@ -227,9 +251,9 @@ public static class QaTestClientNative {
         StringBuilder cls = new StringBuilder(256);
         GetClassName(hwnd, cls, cls.Capacity);
         string name = cls.ToString();
+        if (GetWindow(hwnd, 4 /* GW_OWNER */) != IntPtr.Zero) return false;
         if (name.StartsWith("V8TopLevelFrame", StringComparison.Ordinal)) return true;
         if (!name.StartsWith("V8Window", StringComparison.Ordinal)) return false;
-        if (GetWindow(hwnd, 4 /* GW_OWNER */) != IntPtr.Zero) return false;
         return (GetWindowLong(hwnd, -16 /* GWL_STYLE */) & 0x00020000 /* WS_MINIMIZEBOX */) != 0
             && (GetWindowLong(hwnd, -20 /* GWL_EXSTYLE */) & 0x00040000 /* WS_EX_APPWINDOW */) != 0;
     }
@@ -338,15 +362,12 @@ public static class QaTestClientNative {
 if ($PSEdition -eq 'Core') {
     $refDir = Join-Path $PSHome 'ref'
     $refs = New-Object System.Collections.Generic.List[string]
-    foreach ($name in @(
-            'System.Runtime.dll', 'System.Collections.dll', 'System.Linq.dll',
-            'System.Runtime.InteropServices.dll', 'System.ComponentModel.Primitives.dll',
-            'System.ComponentModel.TypeConverter.dll', 'netstandard.dll')) {
-        $path = Join-Path $refDir $name
-        if (Test-Path -LiteralPath $path) { [void]$refs.Add($path) }
+    foreach ($assembly in Get-ChildItem -LiteralPath $refDir -Filter '*.dll') {
+        [void]$refs.Add($assembly.FullName)
     }
-    $drawing = Join-Path $refDir 'System.Drawing.Common.dll'
-    if (-not (Test-Path -LiteralPath $drawing)) { $drawing = Join-Path $refDir 'System.Drawing.dll' }
+    # A System.Drawing facade in ref does not implement Bitmap/Graphics.
+    $drawing = Join-Path $PSHome 'System.Drawing.Common.dll'
+    if (-not (Test-Path -LiteralPath $drawing)) { $drawing = Join-Path $refDir 'System.Drawing.Common.dll' }
     if (-not (Test-Path -LiteralPath $drawing)) {
         $desktopRoot = Join-Path $env:ProgramFiles 'dotnet\shared\Microsoft.WindowsDesktop.App'
         $desktop = Get-ChildItem -LiteralPath $desktopRoot -Directory -ErrorAction SilentlyContinue |
@@ -355,9 +376,13 @@ if ($PSEdition -eq 'Core') {
         if ($desktop) { $drawing = Join-Path $desktop.FullName 'System.Drawing.Common.dll' }
     }
     if (-not (Test-Path -LiteralPath $drawing)) {
-        throw "System.Drawing.Common was not found under $refDir or Microsoft.WindowsDesktop.App. PowerShell 7 needs it to compile the screenshot helper."
+        throw "System.Drawing.Common was not found under $PSHome, $refDir or Microsoft.WindowsDesktop.App. PowerShell 7 needs it to compile the screenshot helper."
     }
     [void]$refs.Add($drawing)
+    foreach ($name in @('System.Private.Windows.Core.dll', 'System.Private.Windows.GdiPlus.dll')) {
+        $assembly = Join-Path $PSHome $name
+        if (Test-Path -LiteralPath $assembly) { [void]$refs.Add($assembly) }
+    }
     if ($refs.Count -lt 2) { throw "PowerShell 7 reference assemblies were not found under $refDir." }
     Add-Type -ReferencedAssemblies $refs.ToArray() -TypeDefinition $nativeSource
 } else {
@@ -554,12 +579,23 @@ function Stop-TestClient {
     $how = 'not running'
     if ($alive) {
         $how = 'closed'
+        $questionsBefore = @([QaTestClientNative]::ExitQuestionWindows([int]$state.pid, [string]$state.desktop))
         $question = [QaTestClientNative]::DismissExitQuestion([int]$state.pid, [string]$state.desktop)
-        [void][QaTestClientNative]::CloseMainWindows([int]$state.pid, [string]$state.desktop)
+        $posted = [QaTestClientNative]::CloseMainWindows([int]$state.pid, [string]$state.desktop)
         $wait = (Get-Date).AddSeconds($CloseTimeoutSec)
         while ((Test-ClientAlive $state) -and (Get-Date) -lt $wait) {
             $seen = [QaTestClientNative]::DismissExitQuestion([int]$state.pid, [string]$state.desktop)
             if ($seen -eq 'clicked' -or $seen -eq 'unclickable') { $question = $seen }
+            if (-not $Force -and $posted -gt 0 -and $seen -eq 'not-found') {
+                $newQuestions = @([QaTestClientNative]::ExitQuestionWindows([int]$state.pid, [string]$state.desktop) |
+                    Where-Object { $questionsBefore -notcontains $_ })
+                if ($newQuestions.Count -gt 0) {
+                    return @{
+                        port = $Port; pid = $state.pid; stopped = $false; how = 'exit question'; port_free = -not (Get-Listener)
+                        error = 'A new owned 1C dialog appeared after the close request. Connect to this same client with qa_start, inspect ui_dialog, and answer only the confirmed exit question; no key was sent.'
+                    }
+                }
+            }
             if (-not (Test-ClientAlive $state)) { break }
             Start-Sleep -Milliseconds 500
         }
