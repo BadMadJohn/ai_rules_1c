@@ -2666,14 +2666,17 @@ $script:eventSuffixMap = @{
 	# Local: the platform event is OnEditEnd — upstream spells the key OnEndEdit,
 	# so every OnEditEnd handler fell through to the literal fallback name.
 	"OnEditEnd"            = "ПриОкончанииРедактирования"
-	"Selection"            = "ВыборСтроки"
+	# Local: typovaya Selection handlers are …Выбор, not …ВыборСтроки.
+	# DragEnd is the platform event (…ОкончаниеПеретаскивания); upstream spelled
+	# the key Drop, so every DragEnd handler fell through to a literal name.
+	"Selection"            = "Выбор"
 	"OnCurrentPageChange"  = "ПриСменеСтраницы"
 	"TextEditEnd"          = "ОкончаниеВводаТекста"
 	"URLProcessing"        = "ОбработкаНавигационнойСсылки"
 	"DragStart"            = "НачалоПеретаскивания"
 	"Drag"                 = "Перетаскивание"
 	"DragCheck"            = "ПроверкаПеретаскивания"
-	"Drop"                 = "Помещение"
+	"DragEnd"              = "ОкончаниеПеретаскивания"
 	"AfterDeleteRow"       = "ПослеУдаления"
 	"Tuning"               = "Регулирование"
 	"StartListChoice"      = "НачалоВыбораИзСписка"

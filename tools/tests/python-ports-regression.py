@@ -1418,6 +1418,8 @@ def _(work):
 
 FORM_DSL_AUTO_ACTIVATE = "ТПриАктивизацииСтроки"
 FORM_DSL_AUTO_EDITEND = "ТПриОкончанииРедактирования"
+FORM_DSL_AUTO_SELECTION = "ТВыбор"
+FORM_DSL_AUTO_DRAGEND = "ТОкончаниеПеретаскивания"
 FORM_DSL_TABLE = "Т"
 
 # name -> (element keys, expected [(event, handler)] in the compiled Form.xml)
@@ -1434,6 +1436,10 @@ EVENT_ACCEPTED = OrderedDict((
                                     [("OnActivateRow", FORM_DSL_AUTO_ACTIVATE)])),
     ("OnEditEnd auto-name", ({"events": {"OnEditEnd": None}},
                              [("OnEditEnd", FORM_DSL_AUTO_EDITEND)])),
+    ("Selection auto-name", ({"events": {"Selection": None}},
+                             [("Selection", FORM_DSL_AUTO_SELECTION)])),
+    ("DragEnd auto-name", ({"events": {"DragEnd": None}},
+                           [("DragEnd", FORM_DSL_AUTO_DRAGEND)])),
 ))
 
 # name -> element keys that must be refused with a non-zero exit and no output file
@@ -1442,6 +1448,7 @@ EVENT_REFUSED = OrderedDict((
     ("events and handlers together", {"events": {"OnActivateRow": "A"},
                                       "handlers": {"OnActivateRow": "A"}}),
     ("an unknown event name", {"events": {"OnEndEdit": None}}),
+    ("the obsolete Drop key", {"events": {"Drop": None}}),
     ("a handlers key absent from on", {"on": ["OnActivateRow"], "handlers": {"OnEditEnd": "X"}}),
 ))
 

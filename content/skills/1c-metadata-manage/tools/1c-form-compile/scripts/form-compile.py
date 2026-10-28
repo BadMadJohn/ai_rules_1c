@@ -15,7 +15,9 @@
 #        `events`, `on` + `handlers` and a standalone `handlers` map are one
 #        normalization with a single result, a conflicting pair is refused with
 #        exit 1 before any XML is written, `OnEditEnd` maps to
-#        `ПриОкончанииРедактирования`, and an unknown event name is a refusal,
+#        `ПриОкончанииРедактирования`, `Selection` maps to `Выбор` (not
+#        `ВыборСтроки`), `DragEnd` maps to `ОкончаниеПеретаскивания` (upstream
+#        spelled that key `Drop`), and an unknown event name is a refusal,
 #        not a warning.
 #        From-object: a document choice form gets ChoiceMode like the catalog
 #        one, the document item preset writes AutoTime=CurrentOrLast /
@@ -2253,14 +2255,17 @@ EVENT_SUFFIX_MAP = {
     # Local: the platform event is OnEditEnd — upstream spells the key OnEndEdit,
     # so every OnEditEnd handler fell through to the literal fallback name.
     "OnEditEnd": "\u041f\u0440\u0438\u041e\u043a\u043e\u043d\u0447\u0430\u043d\u0438\u0438\u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f",
-    "Selection": "\u0412\u044b\u0431\u043e\u0440\u0421\u0442\u0440\u043e\u043a\u0438",
+    # Local: typovaya Selection handlers end with Выбор, not ВыборСтроки.
+    "Selection": "\u0412\u044b\u0431\u043e\u0440",
     "OnCurrentPageChange": "\u041f\u0440\u0438\u0421\u043c\u0435\u043d\u0435\u0421\u0442\u0440\u0430\u043d\u0438\u0446\u044b",
     "TextEditEnd": "\u041e\u043a\u043e\u043d\u0447\u0430\u043d\u0438\u0435\u0412\u0432\u043e\u0434\u0430\u0422\u0435\u043a\u0441\u0442\u0430",
     "URLProcessing": "\u041e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0430\u041d\u0430\u0432\u0438\u0433\u0430\u0446\u0438\u043e\u043d\u043d\u043e\u0439\u0421\u0441\u044b\u043b\u043a\u0438",
     "DragStart": "\u041d\u0430\u0447\u0430\u043b\u043e\u041f\u0435\u0440\u0435\u0442\u0430\u0441\u043a\u0438\u0432\u0430\u043d\u0438\u044f",
     "Drag": "\u041f\u0435\u0440\u0435\u0442\u0430\u0441\u043a\u0438\u0432\u0430\u043d\u0438\u0435",
     "DragCheck": "\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430\u041f\u0435\u0440\u0435\u0442\u0430\u0441\u043a\u0438\u0432\u0430\u043d\u0438\u044f",
-    "Drop": "\u041f\u043e\u043c\u0435\u0449\u0435\u043d\u0438\u0435",
+    # Local: the platform event is DragEnd. Upstream spelled the key Drop, so
+    # DragEnd fell through to a literal handler name.
+    "DragEnd": "\u041e\u043a\u043e\u043d\u0447\u0430\u043d\u0438\u0435\u041f\u0435\u0440\u0435\u0442\u0430\u0441\u043a\u0438\u0432\u0430\u043d\u0438\u044f",
     "AfterDeleteRow": "\u041f\u043e\u0441\u043b\u0435\u0423\u0434\u0430\u043b\u0435\u043d\u0438\u044f",
     "Tuning": "\u0420\u0435\u0433\u0443\u043b\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435",
     "StartListChoice": "\u041d\u0430\u0447\u0430\u043b\u043e\u0412\u044b\u0431\u043e\u0440\u0430\u0418\u0437\u0421\u043f\u0438\u0441\u043a\u0430",

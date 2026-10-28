@@ -1085,15 +1085,24 @@ $text = ($text -replace "`r`n", "`n") -replace "`n", $targetEol
 Info "Saved: $resolvedPath"
 
 # --- Auto-validate ---
+# Local: the validator is a sibling in this scripts directory; the upstream
+# ..\..\cf-validate\scripts path does not exist in this layout. A missing
+# sibling or a non-zero validator exit is the run's result: the edit is already
+# written, and exit 0 would hide that it was not checked.
+$script:validateExitCode = 0
 if (-not $NoValidate) {
-	# Local: the validator is a sibling in this scripts directory; the upstream
-	# ..\..\cf-validate\scripts path does not exist in this layout, so the check was skipped.
-	$validateScript = Join-Path $PSScriptRoot "cf-validate.ps1"
-	$validateScript = [System.IO.Path]::GetFullPath($validateScript)
-	if (Test-Path $validateScript) {
+	$validateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "cf-validate.ps1"))
+	if (Test-Path -LiteralPath $validateScript) {
 		Write-Host ""
 		Write-Host "--- Running cf-validate ---"
 		& powershell.exe -NoProfile -File $validateScript -ConfigPath $resolvedPath
+		$script:validateExitCode = $LASTEXITCODE
+		if ($script:validateExitCode -ne 0) {
+			[Console]::Error.WriteLine("[ERROR] cf-validate завершился с кодом $($script:validateExitCode): изменение записано, но проверка не пройдена. Разберите вывод выше перед загрузкой в базу.")
+		}
+	} else {
+		[Console]::Error.WriteLine("[ERROR] cf-validate не найден по пути ${validateScript}. Изменение записано, но НЕ проверено.")
+		$script:validateExitCode = 1
 	}
 }
 
@@ -1104,4 +1113,5 @@ Write-Host "  Configuration: $($script:objName)"
 Write-Host "  Added:         $($script:addCount)"
 Write-Host "  Removed:       $($script:removeCount)"
 Write-Host "  Modified:      $($script:modifyCount)"
+if ($script:validateExitCode -ne 0) { exit $script:validateExitCode }
 exit 0
