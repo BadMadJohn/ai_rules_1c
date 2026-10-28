@@ -30,8 +30,9 @@ carries its downstream deltas in its own file header:
   `form-compile`. Downstream deltas: one event normalizer for all three DSL
   spellings (`events`, `on` + `handlers`, standalone `handlers`), an explicit
   non-zero refusal when two spellings are given at once or an event name is
-  unknown, and the corrected `OnEditEnd` → `ПриОкончанииРедактирования` suffix
-  (upstream spells the key `OnEndEdit`, so the auto-name fell through);
+  unknown, and the corrected suffixes `OnEditEnd` → `ПриОкончанииРедактирования`
+  (upstream spells the key `OnEndEdit`), `Selection` → `Выбор` (upstream
+  `ВыборСтроки`) and `DragEnd` → `ОкончаниеПеретаскивания` (upstream key `Drop`);
   from-object document choice forms get `ChoiceMode`, the document item preset
   writes `AutoTime` / `UsePostingMode` / `RepostOnWrite`, `Description` is bound
   only when `DescriptionLength > 0`, form-property enum values are a closed set,

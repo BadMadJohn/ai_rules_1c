@@ -474,11 +474,11 @@ $script:eventSuffixMap = @{
 	"AutoComplete" = "АвтоПодбор"; "Clearing" = "Очистка"; "Opening" = "Открытие"; "Click" = "Нажатие"
 	"OnActivateRow" = "ПриАктивизацииСтроки"; "BeforeAddRow" = "ПередНачаломДобавления"
 	"BeforeDeleteRow" = "ПередУдалением"; "BeforeRowChange" = "ПередНачаломИзменения"
-	"OnStartEdit" = "ПриНачалеРедактирования"; "OnEndEdit" = "ПриОкончанииРедактирования"
-	"Selection" = "ВыборСтроки"; "OnCurrentPageChange" = "ПриСменеСтраницы"
+	"OnStartEdit" = "ПриНачалеРедактирования"; "OnEditEnd" = "ПриОкончанииРедактирования"
+	"Selection" = "Выбор"; "OnCurrentPageChange" = "ПриСменеСтраницы"
 	"TextEditEnd" = "ОкончаниеВводаТекста"; "URLProcessing" = "ОбработкаНавигационнойСсылки"
 	"DragStart" = "НачалоПеретаскивания"; "Drag" = "Перетаскивание"
-	"DragCheck" = "ПроверкаПеретаскивания"; "Drop" = "Помещение"; "AfterDeleteRow" = "ПослеУдаления"
+	"DragCheck" = "ПроверкаПеретаскивания"; "DragEnd" = "ОкончаниеПеретаскивания"; "AfterDeleteRow" = "ПослеУдаления"
 	"Tuning" = "Регулирование"; "StartListChoice" = "НачалоВыбораИзСписка"
 }
 

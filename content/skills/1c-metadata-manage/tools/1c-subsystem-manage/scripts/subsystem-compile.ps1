@@ -697,14 +697,22 @@ if ($parentXmlPath -and (Test-Path $parentXmlPath)) {
 }
 
 # --- 7. Auto-validate ---
+# Local: sibling validator (the upstream ..\..\subsystem-validate path does not exist here).
+# A missing sibling or a non-zero validator exit is the run's result.
+$script:validateExitCode = 0
 if (-not $NoValidate) {
-	# Local: sibling validator (the upstream ..\..\subsystem-validate path does not exist here).
-	$validateScript = Join-Path $PSScriptRoot "subsystem-validate.ps1"
-	$validateScript = [System.IO.Path]::GetFullPath($validateScript)
-	if (Test-Path $validateScript) {
+	$validateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "subsystem-validate.ps1"))
+	if (Test-Path -LiteralPath $validateScript) {
 		Write-Host ""
 		Write-Host "--- Running subsystem-validate ---"
 		& powershell.exe -NoProfile -File $validateScript -SubsystemPath $targetXml
+		$script:validateExitCode = $LASTEXITCODE
+		if ($script:validateExitCode -ne 0) {
+			[Console]::Error.WriteLine("[ERROR] subsystem-validate завершился с кодом $($script:validateExitCode): файл записан, но проверка не пройдена. Разберите вывод выше перед загрузкой в базу.")
+		}
+	} else {
+		[Console]::Error.WriteLine("[ERROR] subsystem-validate не найден по пути ${validateScript}. Файл записан, но НЕ проверен.")
+		$script:validateExitCode = 1
 	}
 }
 
@@ -715,4 +723,5 @@ Write-Host "  UUID:     $uuid"
 Write-Host "  Content:  $($contentItems.Count) objects"
 Write-Host "  Children: $($children.Count)"
 Write-Host "  File:     $targetXml"
+if ($script:validateExitCode -ne 0) { exit $script:validateExitCode }
 exit 0

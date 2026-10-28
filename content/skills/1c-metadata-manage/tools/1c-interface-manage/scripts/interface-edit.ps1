@@ -709,14 +709,22 @@ $text = ($text -replace "`r`n", "`n") -replace "`n", $targetEol
 Info "Saved: $resolvedPath"
 
 # --- Auto-validate ---
+# Local: sibling validator (the upstream ..\..\interface-validate path does not exist here).
+# A missing sibling or a non-zero validator exit is the run's result.
+$script:validateExitCode = 0
 if (-not $NoValidate) {
-	# Local: sibling validator (the upstream ..\..\interface-validate path does not exist here).
-	$validateScript = Join-Path $PSScriptRoot "interface-validate.ps1"
-	$validateScript = [System.IO.Path]::GetFullPath($validateScript)
-	if (Test-Path $validateScript) {
+	$validateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "interface-validate.ps1"))
+	if (Test-Path -LiteralPath $validateScript) {
 		Write-Host ""
 		Write-Host "--- Running interface-validate ---"
 		& powershell.exe -NoProfile -File $validateScript -CIPath $resolvedPath
+		$script:validateExitCode = $LASTEXITCODE
+		if ($script:validateExitCode -ne 0) {
+			[Console]::Error.WriteLine("[ERROR] interface-validate завершился с кодом $($script:validateExitCode): изменение записано, но проверка не пройдена. Разберите вывод выше перед загрузкой в базу.")
+		}
+	} else {
+		[Console]::Error.WriteLine("[ERROR] interface-validate не найден по пути ${validateScript}. Изменение записано, но НЕ проверено.")
+		$script:validateExitCode = 1
 	}
 }
 
@@ -726,4 +734,5 @@ Write-Host "=== interface-edit summary ==="
 Write-Host "  Added:    $($script:addCount)"
 Write-Host "  Removed:  $($script:removeCount)"
 Write-Host "  Modified: $($script:modifyCount)"
+if ($script:validateExitCode -ne 0) { exit $script:validateExitCode }
 exit 0

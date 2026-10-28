@@ -474,6 +474,56 @@ Register-Case 'meta-edit: -NoValidate is the explicit opt-out and the only one' 
     Assert-StyleKept $before $after '-NoValidate edit'
 }
 
+Register-Case 'editors: a failing sibling validator is not summarized as success' {
+    param($Work)
+    # GitHub #28: the four editors found their sibling validators, then discarded
+    # the child exit and always returned 0. The banner must appear and the child
+    # code must be the process code. The edit itself is already on disk.
+    $broken = New-BrokenToolTree $Work 'failing-siblings' { param($Root)
+        $stub = @(
+            'param([string]$ConfigPath, [string]$CIPath, [string]$SubsystemPath, [switch]$Detailed, [int]$MaxErrors = 30, [string]$OutFile)',
+            'Write-Host "stub validator: refusing"',
+            'exit 3')
+        foreach ($rel in @(
+            '1c-cf-manage\scripts\cf-validate.ps1',
+            '1c-interface-manage\scripts\interface-validate.ps1',
+            '1c-subsystem-manage\scripts\subsystem-validate.ps1')) {
+            Set-Content -LiteralPath (Join-Path $Root $rel) -Encoding ASCII -Value $stub
+        }
+    }
+    $dump = Join-Path $Work 'dump'
+    Copy-Fixture 'config-dump' $dump "`n"
+
+    $cf = Invoke-Tool (Join-Path $broken '1c-cf-manage\scripts\cf-edit.ps1') @(
+        '-ConfigPath', (Join-Path $dump 'Configuration.xml'),
+        '-Operation', 'modify-property', '-Value', 'Comment=Probe') $dump
+    Assert-Equal 3 $cf.ExitCode "cf-edit discarded the validator exit (stdout: $($cf.StdOut))"
+    Assert-True ("$($cf.StdOut)$($cf.StdErr)" -match '--- Running cf-validate ---') 'cf-edit never ran cf-validate'
+    Assert-True ((Get-FileFacts (Join-Path $dump 'Configuration.xml')).Text -match 'Probe') 'cf-edit did not write before validation'
+
+    $ciPath = Join-Path $dump 'CommandInterface.xml'
+    $ciText = "<?xml version=`"1.0`" encoding=`"UTF-8`"?>`n<CommandInterface xmlns=`"http://v8.1c.ru/8.3/xcf/extrnprops`" version=`"2.17`">`n`t<CommandsVisibility/>`n`t<CommandsOrder/>`n</CommandInterface>`n"
+    [System.IO.File]::WriteAllText($ciPath, $ciText, (New-Object System.Text.UTF8Encoding($true)))
+    $ci = Invoke-Tool (Join-Path $broken '1c-interface-manage\scripts\interface-edit.ps1') @(
+        '-CIPath', $ciPath, '-Operation', 'hide', '-Value', 'Catalog.TestCatalog.StandardCommand.OpenList') $dump
+    Assert-Equal 3 $ci.ExitCode "interface-edit discarded the validator exit (stdout: $($ci.StdOut))"
+    Assert-True ("$($ci.StdOut)$($ci.StdErr)" -match '--- Running interface-validate ---') 'interface-edit never ran interface-validate'
+
+    $definition = Join-Path $dump 'subsystem.json'
+    [System.IO.File]::WriteAllText($definition, '{"name":"Probe"}', (New-Object System.Text.UTF8Encoding($false)))
+    $compiled = Invoke-Tool (Join-Path $broken '1c-subsystem-manage\scripts\subsystem-compile.ps1') @(
+        '-DefinitionFile', $definition, '-OutputDir', $dump) $dump
+    Assert-Equal 3 $compiled.ExitCode "subsystem-compile discarded the validator exit (stdout: $($compiled.StdOut))"
+    Assert-True ("$($compiled.StdOut)$($compiled.StdErr)" -match '--- Running subsystem-validate ---') 'subsystem-compile never ran subsystem-validate'
+    $subsystem = Join-Path $dump 'Subsystems\Probe.xml'
+    Assert-True (Test-Path -LiteralPath $subsystem) 'subsystem-compile did not write the subsystem before validation'
+
+    $edited = Invoke-Tool (Join-Path $broken '1c-subsystem-manage\scripts\subsystem-edit.ps1') @(
+        '-SubsystemPath', $subsystem, '-Operation', 'add-content', '-Value', 'Catalog.TestCatalog') $dump
+    Assert-Equal 3 $edited.ExitCode "subsystem-edit discarded the validator exit (stdout: $($edited.StdOut))"
+    Assert-True ("$($edited.StdOut)$($edited.StdErr)" -match '--- Running subsystem-validate ---') 'subsystem-edit never ran subsystem-validate'
+}
+
 Register-Case 'meta-edit: a validator that reports errors propagates its non-zero exit' {
     param($Work)
     $broken = New-BrokenToolTree $Work 'failing-validator' { param($Root)
@@ -574,9 +624,23 @@ Register-Case 'form-compile: a standalone handlers map produces the event, confl
     Assert-True ($editEnd.Events[0].Handler -notmatch 'OnEditEnd') "the auto-name is still the literal fallback: $($editEnd.Events[0].Handler)"
     Assert-True ($editEnd.Events[0].Handler.Length -gt 0) 'the auto-name is empty'
 
+    # Selection's typovaya suffix is not the literal event name, and DragEnd must
+    # not fall through to "TDragEnd" (the old map spelled that key Drop).
+    foreach ($auto in @(
+        @{ Tag = 'selection'; Event = 'Selection' },
+        @{ Tag = 'dragend';   Event = 'DragEnd' })) {
+        $case = Invoke-FormCompileCase $Work $auto.Tag ('{"events":{"' + $auto.Event + '":null}}')
+        Assert-Equal 0 $case.Run.ExitCode "$($auto.Event) exit code (stderr: $($case.Run.StdErr))"
+        Assert-Equal 1 $case.Events.Count "$($auto.Event) emitted no event"
+        Assert-Equal $auto.Event $case.Events[0].Name "$($auto.Event) wrong event name"
+        Assert-True ($case.Events[0].Handler -notmatch [regex]::Escape($auto.Event)) "the auto-name is still the literal fallback: $($case.Events[0].Handler)"
+        Assert-True ($case.Events[0].Handler.Length -gt 1) "$($auto.Event) auto-name is only the element name"
+    }
+
     foreach ($pair in @(
         @{ Tag = 'conflict'; Keys = '{"events":{"OnActivateRow":"A"},"on":["OnActivateRow"]}' },
         @{ Tag = 'unknown';  Keys = '{"events":{"OnEndEdit":null}}' },
+        @{ Tag = 'drop';     Keys = '{"events":{"Drop":null}}' },
         @{ Tag = 'orphan';   Keys = '{"on":["OnActivateRow"],"handlers":{"OnEditEnd":"X"}}' })) {
         $case = Invoke-FormCompileCase $Work $pair.Tag $pair.Keys
         Assert-True ($case.Run.ExitCode -ne 0) "$($pair.Tag): expected a non-zero exit, got 0"
